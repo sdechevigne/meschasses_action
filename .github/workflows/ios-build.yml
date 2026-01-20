@@ -301,3 +301,31 @@ jobs:
           name: ios-app-${{ github.run_number }}
           path: app/ios/App/build/App.ipa
           retention-days: 30
+
+      # ========================================
+      # 9️⃣ GITHUB NOTIFICATION + CLEANUP
+      # ========================================
+      - name: 📱 Send GitHub Notification
+        if: success()
+        run: |
+          BUILD_NUMBER="${{ github.run_number }}"
+          BUILD_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          
+          echo "🎉 iOS Build #$BUILD_NUMBER uploaded to TestFlight"
+          echo "🔗 View: $BUILD_URL"
+
+      - name: 🗑️ Auto-delete successful run
+        if: success()
+        run: |
+          echo "🗑️ Deleting successful run..."
+          gh run delete ${{ github.run_id }} --repo ${{ github.repository }}
+          echo "✅ Run deleted"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+
+      - name: 🔴 Keep failed run for debugging
+        if: failure()
+        run: |
+          echo "🔴 Build failed - keeping run for debugging"
+          echo "📋 Review logs at: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

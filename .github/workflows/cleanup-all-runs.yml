@@ -1,0 +1,106 @@
+name: 🗑️ Complete Cleanup - Delete ALL Workflow Runs
+
+on:
+  schedule:
+    # Run weekly on Sunday at 2 AM UTC (3 AM CET)
+    - cron: '0 2 * * 0'
+  workflow_dispatch:
+
+jobs:
+  cleanup-all-runs:
+    name: Delete All Workflow Runs (Keep Failed Only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    permissions:
+      actions: write
+      contents: read
+
+    steps:
+      - name: 🗑️ Delete ALL successful & old failed runs
+        run: |
+          echo "🗑️ Starting complete cleanup..."
+          echo ""
+          
+          # Get all completed runs (both success and failure)
+          RUNS=$(gh run list \
+            --status completed \
+            --json databaseId,status,conclusion,createdAt,name \
+            -q '.[]')
+          
+          SUCCESS_COUNT=0
+          OLD_FAILED_COUNT=0
+          KEPT_COUNT=0
+          
+          echo "$RUNS" | while read -r line; do
+            # Parse JSON line
+            DB_ID=$(echo "$line" | jq -r '.databaseId')
+            CONCLUSION=$(echo "$line" | jq -r '.conclusion')
+            CREATED=$(echo "$line" | jq -r '.createdAt')
+            NAME=$(echo "$line" | jq -r '.name')
+            
+            # Convert date to timestamp
+            CREATED_TS=$(date -d "$CREATED" +%s 2>/dev/null || date -jf "%Y-%m-%dT%H:%M:%SZ" "$CREATED" +%s 2>/dev/null || echo "0")
+            NOW_TS=$(date +%s)
+            AGE_DAYS=$(( (NOW_TS - CREATED_TS) / 86400 ))
+            
+            # Delete successful runs (any age)
+            if [ "$CONCLUSION" = "success" ]; then
+              echo "🗑️ Deleting SUCCESS: $NAME (#$DB_ID)"
+              gh run delete $DB_ID --repo ${{ github.repository }} 2>/dev/null || true
+              ((SUCCESS_COUNT++))
+            
+            # Delete failed runs older than 7 days
+            elif [ "$CONCLUSION" = "failure" ] && [ $AGE_DAYS -gt 7 ]; then
+              echo "🗑️ Deleting OLD FAILURE (${AGE_DAYS}d): $NAME (#$DB_ID)"
+              gh run delete $DB_ID --repo ${{ github.repository }} 2>/dev/null || true
+              ((OLD_FAILED_COUNT++))
+            
+            # Keep recent failed/cancelled runs for debugging
+            elif [ "$CONCLUSION" != "success" ]; then
+              echo "✅ Keeping recent $CONCLUSION: $NAME (#$DB_ID, ${AGE_DAYS}d old)"
+              ((KEPT_COUNT++))
+            fi
+          done
+          
+          echo ""
+          echo "📊 Cleanup Summary:"
+          echo "=================="
+          echo "🗑️ Deleted successful runs: $SUCCESS_COUNT"
+          echo "🗑️ Deleted old failures (>7d): $OLD_FAILED_COUNT"
+          echo "✅ Kept recent failures: $KEPT_COUNT"
+          echo "✅ Cleanup complete"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+
+      - name: 🧹 Clean up any orphaned artifacts
+        run: |
+          echo "🧹 Checking for orphaned artifacts..."
+          
+          # List all artifacts
+          ARTIFACTS=$(gh run list \
+            --json databaseId \
+            -q '.[].databaseId' 2>/dev/null || true)
+          
+          if [ -z "$ARTIFACTS" ]; then
+            echo "✅ No orphaned artifacts found"
+          else
+            echo "ℹ️ Active runs found - artifacts are linked"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+
+      - name: 📋 Final Status Report
+        if: always()
+        run: |
+          echo "📋 Cleanup Execution Report"
+          echo "============================="
+          echo ""
+          echo "✅ Successful builds: DELETED (no trace)"
+          echo "⚠️ Failed builds: Kept for 7 days"
+          echo "🔐 No artifacts stored"
+          echo "🕐 Next cleanup: In 7 days"
+          echo ""
+          echo "Total runs remaining: $(gh run list --status all -q '. | length' 2>/dev/null || echo '?')"

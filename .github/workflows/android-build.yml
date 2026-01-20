@@ -7,19 +7,17 @@ concurrency:
   group: android-build
   cancel-in-progress: false
 
+permissions:
+  contents: write
+  actions: write
+
 jobs:
   build-android:
     name: Build Android App
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    permissions:
-      contents: read
-      actions: write
 
     steps:
-      # ========================================
-      # 0️⃣ SECURITY - Mask sensitive data
-      # ========================================
       - name: 🔐 Setup environment masking
         run: |
           echo "::add-mask::${{ secrets.ANDROID_KEYSTORE_PASSWORD }}"
@@ -27,9 +25,6 @@ jobs:
           echo "::add-mask::${{ secrets.ANDROID_PACKAGE_NAME }}"
           echo "🔐 Secrets masked in logs"
 
-      # ========================================
-      # 1️⃣ CHECKOUT
-      # ========================================
       - name: 📥 Checkout React code from meschasse_mobile
         uses: actions/checkout@v4
         with:
@@ -58,9 +53,6 @@ jobs:
           fi
           echo "✅ Native platform copied"
 
-      # ========================================
-      # 2️⃣ SETUP
-      # ========================================
       - name: 📦 Setup Node.js 20
         uses: actions/setup-node@v4
         with:
@@ -73,20 +65,19 @@ jobs:
           java-version: '21'
           cache: gradle
 
-      - name: 🔧 Setup Android SDK
+      - name: 🔧 Setup Android SDK (CORRIGÉ)
         uses: android-actions/setup-android@v3
         with:
-          api-level: 35
-          ndk-version: '26.1.10909125'
+          cmdline-tools-version: '12.0'
+          packages: 'platforms;android-35 ndk;26.1.10909125'
+          accept-android-sdk-licenses: true
+          log-accepted-android-sdk-licenses: true
 
       - name: 💾 Cache Gradle
         uses: gradle/gradle-build-action@v2
         with:
           cache-read-only: false
 
-      # ========================================
-      # 3️⃣ BUILD WEB & CONFIG
-      # ========================================
       - name: 📚 Install dependencies
         run: |
           cd app
@@ -110,9 +101,6 @@ jobs:
       - name: 🔐 Fix gradlew permissions
         run: chmod +x app/android/gradlew
 
-      # ========================================
-      # 4️⃣ CONFIGURE KEYSTORE & SIGNING - CORRIGÉ
-      # ========================================
       - name: 🔑 Create Keystore from Secret
         env:
           KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -121,33 +109,24 @@ jobs:
         run: |
           cd app/android
           mkdir -p app
-
-          # 1. Création physique (On garde app/ car on est dans app/android)
           echo "${{ secrets.ANDROID_KEYSTORE_FILE }}" | base64 --decode > app/release.keystore 2>/dev/null
-          
-          # Verify file exists
           if [ ! -f app/release.keystore ]; then
             echo "❌ Failed to create keystore"
             exit 1
           fi
-          
           chmod 600 app/release.keystore
           echo "✅ Keystore created at app/android/app/release.keystore"
 
-          # 2. Config gradle.properties
-          # ATTENTION : Ici on met juste 'release.keystore' pour Gradle
           echo "" >> gradle.properties 2>/dev/null || true
-
           cat >> gradle.properties << 'EOF'
           android.useAndroidX=true
           android.enableJetifier=true
-          KEYSTORE_FILE=release.keystore
+          KEYSTORE_FILE=app/release.keystore
           KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD
           KEY_ALIAS=$KEY_ALIAS
           KEY_PASSWORD=$KEY_PASSWORD
           EOF
-          
-          echo "✅ gradle.properties configured with relative path"
+          echo "✅ gradle.properties configured"
 
       - name: 🔍 Verify Keystore
         env:
@@ -158,13 +137,10 @@ jobs:
             echo "❌ Keystore file not found!"
             exit 1
           fi
-          
-          # Silent verification
           keytool -list -v \
             -keystore app/release.keystore \
             -storepass "$KEYSTORE_PASSWORD" \
             -alias "${{ secrets.ANDROID_KEY_ALIAS }}" > /dev/null 2>&1
-          
           if [ $? -eq 0 ]; then
             echo "✅ Keystore verified successfully"
           else
@@ -172,9 +148,6 @@ jobs:
             exit 1
           fi
 
-      # ========================================
-      # 5️⃣ CONFIGURE GRADLE BUILD
-      # ========================================
       - name: 🔧 Configure local.properties
         run: |
           cd app/android
@@ -182,7 +155,7 @@ jobs:
           sdk.dir=${ANDROID_SDK_ROOT}
           ndk.dir=${ANDROID_NDK_ROOT}
           EOF
-          echo "✅ local.properties configuré"
+          echo "✅ local.properties configured"
 
       - name: 🔢 Update App Version
         run: |
@@ -194,18 +167,13 @@ jobs:
           PATCH=$(echo $VERSION | cut -d. -f3)
           VERSION_CODE=$((MAJOR * 1000000 + MINOR * 1000 + PATCH * 10 + BUILD_NUMBER))
           VERSION_NAME="$VERSION-build.$BUILD_NUMBER"
-
           if [ -f build.gradle ]; then
             sed -i "s/versionCode [0-9]*/versionCode $VERSION_CODE/" build.gradle
             sed -i "s/versionName \"[^\"]*\"/versionName \"$VERSION_NAME\"/" build.gradle
-            echo "✅ build.gradle mis à jour"
+            echo "✅ build.gradle updated"
           fi
-
           echo "✅ Version: $VERSION_CODE / $VERSION_NAME"
 
-      # ========================================
-      # 6️⃣ SETUP FIREBASE
-      # ========================================
       - name: 🔥 Setup Firebase Config
         run: |
           cd app/android
@@ -217,9 +185,6 @@ jobs:
             echo "✅ google-services.json configured"
           fi
 
-      # ========================================
-      # 7️⃣ BUILD ANDROID APP - CORRIGÉ
-      # ========================================
       - name: 🔨 Build Release Bundle (AAB)
         env:
           KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -227,21 +192,22 @@ jobs:
           KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
         run: |
           cd app/android
-
-          # CORRECTION: Utilisation de release.keystore (chemin relatif au module app)
           ./gradlew bundleRelease \
-            -DKEYSTORE_FILE=release.keystore \
+            -DKEYSTORE_FILE=app/release.keystore \
             -DKEYSTORE_PASSWORD="$KEYSTORE_PASSWORD" \
             -DKEY_ALIAS="$KEY_ALIAS" \
             -DKEY_PASSWORD="$KEY_PASSWORD" \
             -PsignedBuildType=release \
-            --stacktrace \
-            2>&1 | grep -v "KEYSTORE_PASSWORD\|KEY_PASSWORD" | tee build.log
-
+            --stacktrace 2>&1 | grep -v "KEYSTORE_PASSWORD\|KEY_PASSWORD" | tee build.log
           if grep -q "BUILD SUCCESSFUL" build.log; then
             echo "✅ AAB build successful"
           else
             echo "❌ Build failed"
+            tail -100 build.log
+            exit 1
+          fi
+          if [ ! -f app/build/outputs/bundle/release/app-release.aab ]; then
+            echo "❌ AAB file not found!"
             exit 1
           fi
 
@@ -252,19 +218,14 @@ jobs:
           KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
         run: |
           cd app/android
-
-          # CORRECTION: Utilisation de release.keystore
           ./gradlew assembleRelease \
-            -DKEYSTORE_FILE=release.keystore \
+            -DKEYSTORE_FILE=app/release.keystore \
             -DKEYSTORE_PASSWORD="$KEYSTORE_PASSWORD" \
             -DKEY_ALIAS="$KEY_ALIAS" \
             -DKEY_PASSWORD="$KEY_PASSWORD" \
             -PsignedBuildType=release \
             --stacktrace 2>&1 | grep -v "KEYSTORE_PASSWORD\|KEY_PASSWORD"
 
-      # ========================================
-      # 8️⃣ PUBLISH TO GOOGLE PLAY STORE
-      # ========================================
       - name: 🚀 Upload to Google Play Draft
         uses: r0adkll/upload-google-play@v1
         with:
@@ -276,9 +237,6 @@ jobs:
           status: draft
           whatsNewDirectory: app/whatsnew
 
-      # ========================================
-      # 9️⃣ CLEANUP & SECURITY
-      # ========================================
       - name: 🧹 Cleanup sensitive files
         if: always()
         run: |
@@ -287,7 +245,6 @@ jobs:
             rm -f app/release.keystore
             echo "🧹 Keystore deleted"
           fi
-          
           if [ -f app/google-services.json ]; then
             rm -f app/google-services.json
             echo "🧹 Google Services config deleted"
@@ -301,14 +258,15 @@ jobs:
 
       - name: 🗑️ DELETE RUN - No Public Trace
         if: success()
+        continue-on-error: true
         run: |
           echo "🗑️ Deleting workflow run..."
           sleep 5
-          gh run delete ${{ github.run_id }} --repo ${{ github.repository }}
+          gh run delete ${{ github.run_id }} --repo ${{ github.repository }} --confirm
         env:
           GH_TOKEN: ${{ github.token }}
 
       - name: 🔴 KEEP RUN for debugging - FAILED
         if: failure()
         run: |
-          echo "🔴 Build failed - run preserved"
+          echo "🔴 Build failed - run preserved for debugging"

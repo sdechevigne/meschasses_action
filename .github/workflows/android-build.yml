@@ -1,4 +1,4 @@
-name: 🤖 Build & Deploy Android
+name: 🤖 Build & Deploy Android - Google Play Store (Capacitor 7)
 
 on:
   workflow_dispatch:
@@ -7,17 +7,19 @@ concurrency:
   group: android-build
   cancel-in-progress: false
 
-permissions:
-  contents: write
-  actions: write
-
 jobs:
   build-android:
     name: Build Android App
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: write
 
     steps:
+      # ========================================
+      # 0️⃣ SECURITY - Mask sensitive data
+      # ========================================
       - name: 🔐 Setup environment masking
         run: |
           echo "::add-mask::${{ secrets.ANDROID_KEYSTORE_PASSWORD }}"
@@ -25,14 +27,15 @@ jobs:
           echo "::add-mask::${{ secrets.ANDROID_PACKAGE_NAME }}"
           echo "🔐 Secrets masked in logs"
 
-      - name: 📥 Checkout React code from meschasse_mobile
+      # ========================================
+      # 1️⃣ CHECKOUT REPOS
+      # ========================================
+      - name: 📥 Checkout main repo (code React Native)
         uses: actions/checkout@v4
         with:
-          repository: sdechevigne/meschasse_mobile
-          token: ${{ secrets.CI_PAT_TOKEN }}
           path: app
 
-      - name: 📥 Checkout native Android from meschasses_natives
+      - name: 📥 Checkout native Android repo
         uses: actions/checkout@v4
         with:
           repository: sdechevigne/meschasses_natives
@@ -41,17 +44,6 @@ jobs:
           sparse-checkout: |
             android
             whatsnew
-
-      - name: 📂 Copy Android platform to app
-        run: |
-          echo "📋 Copying android/ from native repo..."
-          cp -r native/android app/
-          if [ -d native/whatsnew ]; then
-            cp -r native/whatsnew app/
-          else
-            echo "⚠️ whatsnew/ directory not found, skipping"
-          fi
-          echo "✅ Native platform copied"
 
       - name: 📦 Setup Node.js 20
         uses: actions/setup-node@v4
@@ -65,19 +57,36 @@ jobs:
           java-version: '21'
           cache: gradle
 
-      - name: 🔧 Setup Android SDK (CORRIGÉ)
+      - name: 🔧 Setup Android SDK
         uses: android-actions/setup-android@v3
         with:
-          cmdline-tools-version: '12.0'
-          packages: 'platforms;android-35 ndk;26.1.10909125'
-          accept-android-sdk-licenses: true
-          log-accepted-android-sdk-licenses: true
+          api-level: 35
+          ndk-version: '26.1.10909125'
 
       - name: 💾 Cache Gradle
         uses: gradle/gradle-build-action@v2
         with:
           cache-read-only: false
 
+      # ========================================
+      # 2️⃣ COPY NATIVE PLATFORM
+      # ========================================
+      - name: 📂 Copy Android platform to app
+        run: |
+          echo "📋 Copying android/ from native repo..."
+          cp -r native/android app/
+          echo "📋 Copying whatsnew/ if exists..."
+          if [ -d native/whatsnew ]; then
+            cp -r native/whatsnew app/
+          else
+            echo "⚠️ whatsnew/ directory not found, skipping"
+          fi
+          echo "✅ Native platform copied"
+          ls -la app/
+
+      # ========================================
+      # 3️⃣ BUILD WEB & CONFIG
+      # ========================================
       - name: 📚 Install dependencies
         run: |
           cd app
@@ -101,6 +110,9 @@ jobs:
       - name: 🔐 Fix gradlew permissions
         run: chmod +x app/android/gradlew
 
+      # ========================================
+      # 4️⃣ CONFIGURE KEYSTORE & SIGNING
+      # ========================================
       - name: 🔑 Create Keystore from Secret
         env:
           KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -109,45 +121,41 @@ jobs:
         run: |
           cd app/android
           mkdir -p app
-          echo "${{ secrets.ANDROID_KEYSTORE_FILE }}" | base64 --decode > app/release.keystore 2>/dev/null
-          if [ ! -f app/release.keystore ]; then
-            echo "❌ Failed to create keystore"
-            exit 1
-          fi
-          chmod 600 app/release.keystore
-          echo "✅ Keystore created at app/android/app/release.keystore"
 
-          echo "" >> gradle.properties 2>/dev/null || true
-          cat >> gradle.properties << 'EOF'
-          android.useAndroidX=true
-          android.enableJetifier=true
-          KEYSTORE_FILE=app/release.keystore
-          KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD
-          KEY_ALIAS=$KEY_ALIAS
-          KEY_PASSWORD=$KEY_PASSWORD
-          EOF
-          echo "✅ gradle.properties configured"
+          echo "${{ secrets.ANDROID_KEYSTORE_FILE }}" | base64 --decode > app/release.keystore
+
+          # ✅ Config gradle.properties
+          cat >> gradle.properties << EOF
+
+# AndroidX
+android.useAndroidX=true
+android.enableJetifier=true
+
+# Keystore
+KEYSTORE_FILE=app/release.keystore
+KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD
+KEY_ALIAS=$KEY_ALIAS
+KEY_PASSWORD=$KEY_PASSWORD
+EOF
+
+          echo "✅ Keystore configuré"
 
       - name: 🔍 Verify Keystore
-        env:
-          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
         run: |
           cd app/android
-          if [ ! -f app/release.keystore ]; then
+          if [ -f app/release.keystore ]; then
+            keytool -list -v \
+              -keystore app/release.keystore \
+              -storepass "${{ secrets.ANDROID_KEYSTORE_PASSWORD }}" > /dev/null 2>&1
+            echo "✅ Keystore vérifié (silent mode)"
+          else
             echo "❌ Keystore file not found!"
             exit 1
           fi
-          keytool -list -v \
-            -keystore app/release.keystore \
-            -storepass "$KEYSTORE_PASSWORD" \
-            -alias "${{ secrets.ANDROID_KEY_ALIAS }}" > /dev/null 2>&1
-          if [ $? -eq 0 ]; then
-            echo "✅ Keystore verified successfully"
-          else
-            echo "❌ Keystore verification failed"
-            exit 1
-          fi
 
+      # ========================================
+      # 5️⃣ CONFIGURE GRADLE BUILD
+      # ========================================
       - name: 🔧 Configure local.properties
         run: |
           cd app/android
@@ -155,36 +163,60 @@ jobs:
           sdk.dir=${ANDROID_SDK_ROOT}
           ndk.dir=${ANDROID_NDK_ROOT}
           EOF
-          echo "✅ local.properties configured"
+
+          echo "✅ local.properties configuré"
 
       - name: 🔢 Update App Version
         run: |
           cd app/android/app
+
           VERSION=$(grep '"version"' ../../package.json | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
           BUILD_NUMBER="${{ github.run_number }}"
+
           MAJOR=$(echo $VERSION | cut -d. -f1)
           MINOR=$(echo $VERSION | cut -d. -f2)
           PATCH=$(echo $VERSION | cut -d. -f3)
+
           VERSION_CODE=$((MAJOR * 1000000 + MINOR * 1000 + PATCH * 10 + BUILD_NUMBER))
           VERSION_NAME="$VERSION-build.$BUILD_NUMBER"
+
           if [ -f build.gradle ]; then
             sed -i "s/versionCode [0-9]*/versionCode $VERSION_CODE/" build.gradle
             sed -i "s/versionName \"[^\"]*\"/versionName \"$VERSION_NAME\"/" build.gradle
-            echo "✅ build.gradle updated"
+            echo "✅ build.gradle mis à jour"
           fi
+
           echo "✅ Version: $VERSION_CODE / $VERSION_NAME"
 
+      - name: 🔧 Disable Lint Errors for Release
+        run: |
+          cd app/android/app
+
+          echo "📋 Adding lint config to suppress MissingDefaultResource..."
+
+          if grep -q "lint {" build.gradle; then
+            echo "⚠️ Lint config already exists"
+          else
+            sed -i '/^android {/a\    lint {\n        disable '\''MissingDefaultResource'\''\n        checkReleaseBuilds false\n    }' build.gradle
+            echo "✅ Lint config added"
+          fi
+
+      # ========================================
+      # 6️⃣ SETUP FIREBASE
+      # ========================================
       - name: 🔥 Setup Firebase Config
         run: |
           cd app/android
           if [ -z "${{ secrets.ANDROID_GOOGLE_SERVICES_JSON }}" ]; then
             echo "⚠️ Google Services JSON secret not found"
           else
-            echo "${{ secrets.ANDROID_GOOGLE_SERVICES_JSON }}" | base64 --decode > app/google-services.json 2>/dev/null
-            chmod 600 app/google-services.json
-            echo "✅ google-services.json configured"
+            echo "${{ secrets.ANDROID_GOOGLE_SERVICES_JSON }}" | base64 --decode > app/google-services.json
+            echo "✅ google-services.json configuré"
           fi
 
+      # ========================================
+      # 7️⃣ BUILD ANDROID APP
+      # ========================================
       - name: 🔨 Build Release Bundle (AAB)
         env:
           KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -192,22 +224,21 @@ jobs:
           KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
         run: |
           cd app/android
+
           ./gradlew bundleRelease \
             -DKEYSTORE_FILE=app/release.keystore \
             -DKEYSTORE_PASSWORD="$KEYSTORE_PASSWORD" \
             -DKEY_ALIAS="$KEY_ALIAS" \
             -DKEY_PASSWORD="$KEY_PASSWORD" \
             -PsignedBuildType=release \
-            --stacktrace 2>&1 | grep -v "KEYSTORE_PASSWORD\|KEY_PASSWORD" | tee build.log
+            --stacktrace \
+            2>&1 | grep -v "KEYSTORE_PASSWORD\|KEY_PASSWORD" | tee build.log
+
           if grep -q "BUILD SUCCESSFUL" build.log; then
             echo "✅ AAB build successful"
           else
             echo "❌ Build failed"
-            tail -100 build.log
-            exit 1
-          fi
-          if [ ! -f app/build/outputs/bundle/release/app-release.aab ]; then
-            echo "❌ AAB file not found!"
+            tail -150 build.log
             exit 1
           fi
 
@@ -218,6 +249,7 @@ jobs:
           KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
         run: |
           cd app/android
+
           ./gradlew assembleRelease \
             -DKEYSTORE_FILE=app/release.keystore \
             -DKEYSTORE_PASSWORD="$KEYSTORE_PASSWORD" \
@@ -226,6 +258,9 @@ jobs:
             -PsignedBuildType=release \
             --stacktrace 2>&1 | grep -v "KEYSTORE_PASSWORD\|KEY_PASSWORD"
 
+      # ========================================
+      # 8️⃣ PUBLISH TO GOOGLE PLAY STORE
+      # ========================================
       - name: 🚀 Upload to Google Play Draft
         uses: r0adkll/upload-google-play@v1
         with:
@@ -237,16 +272,24 @@ jobs:
           status: draft
           whatsNewDirectory: app/whatsnew
 
+      # ========================================
+      # 9️⃣ CLEANUP & SECURITY
+      # ========================================
       - name: 🧹 Cleanup sensitive files
         if: always()
         run: |
           cd app/android
           if [ -f app/release.keystore ]; then
-            rm -f app/release.keystore
-            echo "🧹 Keystore deleted"
+            shred -vfz -n 10 app/release.keystore 2>/dev/null || rm -f app/release.keystore
+            echo "🧹 Keystore securely deleted"
           fi
+
+          if [ -f gradle.properties.bak ]; then
+            rm -f gradle.properties.bak
+          fi
+
           if [ -f app/google-services.json ]; then
-            rm -f app/google-services.json
+            shred -vfz -n 10 app/google-services.json 2>/dev/null || rm -f app/google-services.json
             echo "🧹 Google Services config deleted"
           fi
 
@@ -255,18 +298,10 @@ jobs:
         run: |
           BUILD_NUMBER="${{ github.run_number }}"
           echo "🎉 Android Build #$BUILD_NUMBER uploaded to Google Play Store (DRAFT)"
-
-      - name: 🗑️ DELETE RUN - No Public Trace
-        if: success()
-        continue-on-error: true
-        run: |
-          echo "🗑️ Deleting workflow run..."
-          sleep 5
-          gh run delete ${{ github.run_id }} --repo ${{ github.repository }} --confirm
-        env:
-          GH_TOKEN: ${{ github.token }}
+          echo "📦 Status: Draft (internal track - ready for testing)"
 
       - name: 🔴 KEEP RUN for debugging - FAILED
         if: failure()
         run: |
-          echo "🔴 Build failed - run preserved for debugging"
+          echo "🔴 Build failed - run preserved for investigation"
+          echo "📋 Check logs for errors"

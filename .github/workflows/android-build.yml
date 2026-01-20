@@ -103,7 +103,7 @@ jobs:
           mkdir -p app
 
           # 1. Création du fichier physique
-          echo "${{ secrets.ANDROID_KEYSTORE_FILE }}" | base64 --decode > app/release.keystore
+          echo "${{ secrets.ANDROID_KEYSTORE_FILE }}" | base64 --decode > release.keystore
           
           # 2. Configuration Gradle (Avec cat << EOF pour la sécurité)
           # Note: On utilise 'release.keystore' comme dans votre version qui fonctionnait
@@ -114,7 +114,7 @@ jobs:
           android.enableJetifier=true
           
           # Signing Config
-          KEYSTORE_FILE=app/release.keystore
+          KEYSTORE_FILE=release.keystore
           KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD
           KEY_ALIAS=$KEY_ALIAS
           KEY_PASSWORD=$KEY_PASSWORD
@@ -136,7 +136,7 @@ jobs:
 
           # On utilise juste bundleRelease. On NE FAIT PAS assembleRelease pour économiser la RAM.
           ./gradlew bundleRelease \
-            -DKEYSTORE_FILE=app/release.keystore \
+            -DKEYSTORE_FILE=release.keystore \
             -DKEYSTORE_PASSWORD="$KEYSTORE_PASSWORD" \
             -DKEY_ALIAS="$KEY_ALIAS" \
             -DKEY_PASSWORD="$KEY_PASSWORD" \
@@ -163,11 +163,12 @@ jobs:
         if: always()
         run: |
           cd app/android
-          rm -f app/release.keystore gradle.properties
+          rm -f release.keystore gradle.properties
           
           echo "🗑️ Deleting workflow run..."
           sleep 5
           gh run delete ${{ github.run_id }} --repo ${{ github.repository }}
         env:
           GH_TOKEN: ${{ secrets.CI_PAT_TOKEN }}
+
 

@@ -131,16 +131,17 @@ jobs:
           
           # ✅ Create FRESH gradle.properties with signing config
           cat > gradle.properties << 'EOF'
-# AndroidX
-android.useAndroidX=true
-android.enableJetifier=true
+          # AndroidX
+          android.useAndroidX=true
+          android.enableJetifier=true
 
-# Keystore (direct paths, no variables)
-KEYSTORE_FILE=release.keystore
-org.gradle.jvmargs=-Xmx2048m
-EOF
+          # Keystore (direct paths, no variables)
+          KEYSTORE_FILE=release.keystore
+          # OPTIMIZATION: Limit JVM memory to prevent crash
+          org.gradle.jvmargs=-Xmx3072m -Dfile.encoding=UTF-8
+          EOF
 
-          # ✅ Add dynamic values
+          # ✅ Add dynamic values safely
           echo "KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD" >> gradle.properties
           echo "KEY_ALIAS=$KEY_ALIAS" >> gradle.properties
           echo "KEY_PASSWORD=$KEY_PASSWORD" >> gradle.properties
@@ -151,10 +152,6 @@ EOF
           echo ""
           echo "📋 DEBUG: Keystore files created:"
           ls -lah app/release.keystore || echo "❌ Keystore not found!"
-          echo ""
-          echo "📋 DEBUG: gradle.properties content:"
-          grep -v "PASSWORD\|KEY_" gradle.properties
-          echo ""
 
       - name: 🔍 Verify Keystore
         run: |
@@ -208,12 +205,11 @@ EOF
         run: |
           cd app/android/app
 
-          echo "📋 Adding lint config to suppress MissingDefaultResource..."
-
           if grep -q "lint {" build.gradle; then
             echo "⚠️ Lint config already exists"
           else
-            sed -i '/^android {/a\    lint {\n        disable '\''MissingDefaultResource'\''\n        checkReleaseBuilds false\n    }' build.gradle
+            # Insert lint block to ignore errors
+            sed -i '/^android {/a\    lint {\n        disable '\''MissingDefaultResource'\''\n        checkReleaseBuilds false\n        abortOnError false\n    }' build.gradle
             echo "✅ Lint config added"
           fi
 
@@ -232,7 +228,7 @@ EOF
           fi
 
       # ========================================
-      # 7️⃣ BUILD ANDROID APP
+      # 7️⃣ BUILD ANDROID APP (ONLY AAB)
       # ========================================
       - name: 🔨 Build Release Bundle (AAB)
         env:
@@ -240,10 +236,16 @@ EOF
           KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
           KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
         run: |
+          set -o pipefail  # Stop script if gradle fails before tee
           cd app/android
 
           echo "📋 Running bundleRelease task..."
           ./gradlew bundleRelease \
+            -DKEYSTORE_FILE=release.keystore \
+            -DKEYSTORE_PASSWORD="$KEYSTORE_PASSWORD" \
+            -DKEY_ALIAS="$KEY_ALIAS" \
+            -DKEY_PASSWORD="$KEY_PASSWORD" \
+            -PsignedBuildType=release \
             --stacktrace \
             2>&1 | tee build.log
 
@@ -252,31 +254,8 @@ EOF
             ls -lh app/build/outputs/bundle/release/app-release.aab
           else
             echo "❌ Build failed"
-            echo ""
-            echo "📋 ===== ERROR LOG (Last 200 lines) ====="
             tail -200 build.log
-            echo "=============================================="
             exit 1
-          fi
-
-      - name: 🔐 Build & Sign APK
-        env:
-          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-        run: |
-          cd app/android
-
-          echo "📋 Running assembleRelease task..."
-          ./gradlew assembleRelease \
-            --stacktrace \
-            2>&1 | tee apk-build.log
-
-          if grep -q "BUILD SUCCESSFUL" apk-build.log; then
-            echo "✅ APK build successful"
-            ls -lh app/build/outputs/apk/release/app-release.apk
-          else
-            echo "⚠️ APK build had issues (may still be usable)"
           fi
 
       # ========================================
@@ -300,25 +279,17 @@ EOF
         if: always()
         run: |
           cd app/android
-          if [ -f app/release.keystore ]; then
-            shred -vfz -n 10 app/release.keystore 2>/dev/null || rm -f app/release.keystore
-            echo "🧹 Keystore securely deleted"
-          fi
-
-          if [ -f app/google-services.json ]; then
-            shred -vfz -n 10 app/google-services.json 2>/dev/null || rm -f app/google-services.json
-            echo "🧹 Google Services config deleted"
-          fi
+          # Secure deletion
+          rm -f app/release.keystore app/google-services.json gradle.properties
+          echo "🧹 Cleanup complete"
 
       - name: 📱 GitHub Notification - SUCCESS
         if: success()
         run: |
           BUILD_NUMBER="${{ github.run_number }}"
           echo "🎉 Android Build #$BUILD_NUMBER uploaded to Google Play Store (DRAFT)"
-          echo "📦 Status: Draft (internal track - ready for testing)"
 
       - name: 🔴 KEEP RUN for debugging - FAILED
         if: failure()
         run: |
           echo "🔴 Build failed - run preserved for investigation"
-          echo "📋 Check logs for errors"

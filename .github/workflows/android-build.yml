@@ -146,17 +146,17 @@ jobs:
           echo "" >> gradle.properties 2>/dev/null || true
 
           cat >> gradle.properties << 'EOF'
-# AndroidX
-android.useAndroidX=true
-android.enableJetifier=true
-
-# Keystore Configuration
-KEYSTORE_FILE=app/release.keystore
-KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD
-KEY_ALIAS=$KEY_ALIAS
-KEY_PASSWORD=$KEY_PASSWORD
-EOF
-
+          # AndroidX
+          android.useAndroidX=true
+          android.enableJetifier=true
+          
+          # Keystore Configuration
+          KEYSTORE_FILE=app/release.keystore
+          KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD
+          KEY_ALIAS=$KEY_ALIAS
+          KEY_PASSWORD=$KEY_PASSWORD
+          EOF
+          
           echo "✅ gradle.properties configured"
 
       - name: 🔧 Fix Keystore Path in build.gradle
@@ -343,3 +343,4 @@ EOF
         run: |
           echo "🔴 Build failed - run preserved for investigation"
           echo "📋 Check logs for errors"
+

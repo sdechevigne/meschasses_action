@@ -7,9 +7,30 @@ jobs:
   build-ios:
     name: Build iOS App
     runs-on: macos-15
+    environment: production
     timeout-minutes: 60
 
+    # 🔒 SÉCURITÉ: Protection multi-niveaux
+    environment: production  # Require manual approval
+    if: |
+      github.event_name == 'workflow_dispatch' &&
+      (github.actor == 'sdechevigne' || github.actor_id == 'TON_USER_ID') &&
+      github.ref == 'refs/heads/main'
+
     steps:
+
+      # ✅ Vérification supplémentaire au début
+      - name: 🔐 Security Check
+        run: |
+          echo "🔍 Workflow triggered by: ${{ github.actor }}"
+          echo "🔍 Event: ${{ github.event_name }}"
+          echo "🔍 Ref: ${{ github.ref }}"
+          
+          # Fail si conditions non remplies
+          if [ "${{ github.actor }}" != "sdechevigne" ]; then
+            echo "❌ Unauthorized actor"
+            exit 1
+          fi
       # ========================================
       # 1️⃣ CHECKOUT - MODIFIÉ
       # ========================================

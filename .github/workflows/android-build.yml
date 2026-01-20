@@ -127,16 +127,16 @@ jobs:
           # ✅ Config gradle.properties
           cat >> gradle.properties << EOF
 
-# AndroidX
-android.useAndroidX=true
-android.enableJetifier=true
-
-# Keystore
-KEYSTORE_FILE=app/release.keystore
-KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD
-KEY_ALIAS=$KEY_ALIAS
-KEY_PASSWORD=$KEY_PASSWORD
-EOF
+          # AndroidX
+          android.useAndroidX=true
+          android.enableJetifier=true
+          
+          # Keystore
+          KEYSTORE_FILE=app/release.keystore
+          KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD
+          KEY_ALIAS=$KEY_ALIAS
+          KEY_PASSWORD=$KEY_PASSWORD
+          EOF
 
           echo "✅ Keystore configuré"
 
@@ -305,3 +305,4 @@ EOF
         run: |
           echo "🔴 Build failed - run preserved for investigation"
           echo "📋 Check logs for errors"
+

@@ -110,6 +110,8 @@ jobs:
           echo "${{ secrets.ANDROID_KEYSTORE_FILE }}" | base64 --decode > app/release.keystore
 
           # ✅ Config gradle.properties - APPEND safely
+          echo "" >> gradle.properties 
+          
           echo "android.useAndroidX=true" >> gradle.properties
           echo "android.enableJetifier=true" >> gradle.properties
           echo "KEYSTORE_FILE=app/release.keystore" >> gradle.properties
@@ -118,7 +120,7 @@ jobs:
           echo "KEY_PASSWORD=$KEY_PASSWORD" >> gradle.properties
 
           echo "✅ Keystore configuré"
-
+          
       - name: 🔍 Verify Keystore
         run: |
           cd app/android
@@ -262,3 +264,4 @@ jobs:
         run: |
           echo "🔴 Build failed - run preserved for investigation"
           echo "📋 Logs: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+

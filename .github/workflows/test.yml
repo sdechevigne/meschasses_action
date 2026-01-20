@@ -1,4 +1,4 @@
-name: 🤖 Build & Deploy Android
+name: 🤖 test
 
 on:
   workflow_dispatch:

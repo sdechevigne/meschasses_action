@@ -9,7 +9,7 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 60
 
-    # 🔒 SÉCURITÉ: Protection multi-niveaux
+    # 🔐 SÉCURITÉ: Protection multi-niveaux
     environment: production  # Require manual approval
     if: |
       github.event_name == 'workflow_dispatch' &&
@@ -284,7 +284,7 @@ jobs:
             -allowProvisioningUpdates
 
       # ========================================
-      # 8️⃣ UPLOAD WITH NOTARYTOOL - WORKING
+      # 8️⃣ UPLOAD WITH NOTARYTOOL - FIXED
       # ========================================
       - name: 🚀 Upload to App Store Connect
         run: |
@@ -292,24 +292,33 @@ jobs:
 
           echo "🚀 Uploading IPA to App Store Connect..."
           
-          # Use notarytool directly (modern Apple tool, works on macOS 15)
+          # Create temporary key file
+          KEY_FILE=$(mktemp)
+          echo "${{ secrets.APPSTORE_API_PRIVATE_KEY }}" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          
+          # Use notarytool with the key file
           xcrun notarytool submit App.ipa \
-            --key <(echo "${{ secrets.APPSTORE_API_PRIVATE_KEY }}") \
+            --key "$KEY_FILE" \
             --key-id "${{ secrets.APPSTORE_API_KEY_ID }}" \
             --issuer "${{ secrets.APPSTORE_ISSUER_ID }}" \
             --wait \
             2>&1 | tee upload.log
 
+          # Clean up
+          rm -f "$KEY_FILE"
+          
           echo ""
           echo "Upload completed. Check logs above for details."
           echo ""
 
-          # Check if successful (look for success message)
-          if grep -qi "accepted" upload.log || grep -qi "success" upload.log; then
+          # Check if successful
+          if grep -qi "accepted" upload.log || grep -qi "success" upload.log || ! grep -qi "error" upload.log; then
             echo "✅ Upload to App Store successful!"
           else
             echo "Upload output:"
             cat upload.log
+            exit 1
           fi
 
       - name: 💾 Save artifact

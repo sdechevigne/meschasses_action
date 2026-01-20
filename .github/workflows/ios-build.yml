@@ -305,27 +305,30 @@ jobs:
       # ========================================
       # 9️⃣ GITHUB NOTIFICATION + CLEANUP
       # ========================================
-      - name: 📱 Send GitHub Notification
+      - name: 📱 GitHub Notification - SUCCESS
         if: success()
         run: |
           BUILD_NUMBER="${{ github.run_number }}"
           BUILD_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           
           echo "🎉 iOS Build #$BUILD_NUMBER uploaded to TestFlight"
-          echo "🔗 View: $BUILD_URL"
+          echo "📱 Check TestFlight for new build"
+          echo "🔗 Workflow: $BUILD_URL"
 
-      - name: 🗑️ Auto-delete successful run
+      - name: 🗑️ DELETE RUN - No Trace Left
         if: success()
         run: |
-          echo "🗑️ Deleting successful run..."
+          echo "🗑️ Deleting this run to leave no trace..."
+          sleep 5
           gh run delete ${{ github.run_id }} --repo ${{ github.repository }}
-          echo "✅ Run deleted"
+          echo "✅ Run deleted - zero public history"
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
 
-      - name: 🔴 Keep failed run for debugging
+      - name: 🔴 KEEP RUN for debugging - FAILED
         if: failure()
         run: |
-          echo "🔴 Build failed - keeping run for debugging"
-          echo "📋 Review logs at: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          echo "🔴 Build failed - run preserved for investigation"
+          echo "📋 Logs: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+

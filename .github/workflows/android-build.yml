@@ -96,7 +96,7 @@ jobs:
         run: chmod +x app/android/gradlew
 
       # ========================================
-      # 4️⃣ CONFIGURE KEYSTORE & SIGNING - INCHANGÉ
+      # 4️⃣ CONFIGURE KEYSTORE & SIGNING - FIXED
       # ========================================
       - name: 🔑 Create Keystore from Secret
         env:
@@ -109,18 +109,13 @@ jobs:
 
           echo "${{ secrets.ANDROID_KEYSTORE_FILE }}" | base64 --decode > app/release.keystore
 
-          # ✅ Config gradle.properties
-          cat >> gradle.properties << EOF
-          # AndroidX
-          android.useAndroidX=true
-          android.enableJetifier=true
-
-          # Keystore
-          KEYSTORE_FILE=app/release.keystore
-          KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD
-          KEY_ALIAS=$KEY_ALIAS
-          KEY_PASSWORD=$KEY_PASSWORD
-          EOF
+          # ✅ Config gradle.properties - APPEND safely
+          echo "android.useAndroidX=true" >> gradle.properties
+          echo "android.enableJetifier=true" >> gradle.properties
+          echo "KEYSTORE_FILE=app/release.keystore" >> gradle.properties
+          echo "KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD" >> gradle.properties
+          echo "KEY_ALIAS=$KEY_ALIAS" >> gradle.properties
+          echo "KEY_PASSWORD=$KEY_PASSWORD" >> gradle.properties
 
           echo "✅ Keystore configuré"
 

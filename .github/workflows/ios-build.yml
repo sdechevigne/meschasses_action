@@ -11,16 +11,20 @@ jobs:
 
     steps:
       # ========================================
-      # 1️⃣ CHECKOUT
+      # 1️⃣ CHECKOUT - MODIFIÉ
       # ========================================
-      - name: 📥 Checkout React code
+      - name: 📥 Checkout React code from meschasse_mobile
         uses: actions/checkout@v4
+        with:
+          repository: sdechevigne/meschasse_mobile
+          token: ${{ secrets.CI_PAT_TOKEN }}
+          path: app
 
-      - name: 📥 Checkout native iOS
+      - name: 📥 Checkout native iOS from meschasses_natives
         uses: actions/checkout@v4
         with:
           repository: sdechevigne/meschasses_natives
-          token: ${{ secrets.PAT_TOKEN }}
+          token: ${{ secrets.CI_PAT_TOKEN }}
           path: native-temp
           sparse-checkout: |
             ios
@@ -28,15 +32,16 @@ jobs:
 
       - name: 📂 Copy iOS from native repo
         run: |
+          cd app
           rm -rf ios
-          cp -r native-temp/ios .
-          if [ -d native-temp/whatsnew ]; then
-            cp -r native-temp/whatsnew .
+          cp -r ../native-temp/ios .
+          if [ -d ../native-temp/whatsnew ]; then
+            cp -r ../native-temp/whatsnew .
           fi
           echo "✅ iOS copied"
 
       # ========================================
-      # 2️⃣ SETUP & BUILD
+      # 2️⃣ SETUP & BUILD - INCHANGÉ
       # ========================================
       - name: 📦 Setup Node.js
         uses: actions/setup-node@v4
@@ -44,25 +49,29 @@ jobs:
           node-version: '20'
 
       - name: 🔧 Install dependencies
-        run: npm install
+        run: |
+          cd app
+          npm install
 
       - name: 🏗️ Build web app
-        run: npm run build
+        run: |
+          cd app
+          npm run build
         env:
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
           VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
           VITE_POSTHOG_KEY: ${{ secrets.VITE_POSTHOG_KEY }}
 
       - name: 📱 Sync Capacitor
-        run: npx cap sync ios
+        run: |
+          cd app
+          npx cap sync ios
 
       - name: 🔥 Verify Firebase in Podfile
         run: |
-          cd ios/App
-          
+          cd app/ios/App
           echo "🔍 Checking Firebase pods in Podfile..."
           
-          # Vérifier que Firebase est présent
           if ! grep -q "CapacitorFirebaseApp" Podfile; then
             echo "❌ ERROR: Firebase pods missing from Podfile!"
             echo "This might happen if cap sync overwrites the Podfile."
@@ -72,34 +81,31 @@ jobs:
             exit 1
           fi
           
-          # Vérifier GoogleService-Info.plist
           if [ ! -f App/GoogleService-Info.plist ]; then
             echo "❌ ERROR: GoogleService-Info.plist not found!"
             exit 1
           fi
           
           echo "✅ Firebase configuration verified"
-          echo "  - CapacitorFirebaseApp: found in Podfile"
-          echo "  - CapacitorFirebaseAuthentication: found in Podfile"
-          echo "  - GoogleService-Info.plist: present"
+          echo " - CapacitorFirebaseApp: found in Podfile"
+          echo " - CapacitorFirebaseAuthentication: found in Podfile"
+          echo " - GoogleService-Info.plist: present"
 
       # ========================================
-      # 3️⃣ COCOAPODS
+      # 3️⃣ COCOAPODS - INCHANGÉ
       # ========================================
       - name: 💎 Install CocoaPods
         run: |
           gem install xcodeproj cocoapods
-          cd ios/App
+          cd app/ios/App
           rm -rf Pods Podfile.lock
           pod install --repo-update
 
       - name: 🔐 Verify Privacy Manifests
         run: |
-          cd ios/App
-          
+          cd app/ios/App
           echo "🔍 Checking for Privacy Manifests..."
           
-          # Rechercher les Privacy Manifests Firebase/Google
           MANIFESTS=$(find Pods -name "PrivacyInfo.xcprivacy" | grep -E "(Firebase|Google|GTM)" || true)
           
           if [ -z "$MANIFESTS" ]; then
@@ -108,22 +114,22 @@ jobs:
           else
             echo "✅ Privacy Manifests found:"
             echo "$MANIFESTS" | while read file; do
-              echo "  - $(basename $(dirname $file))"
+              echo " - $(basename $(dirname $file))"
             done
           fi
 
       # ========================================
-      # 4️⃣ VERSION BUMP ONLY
+      # 4️⃣ VERSION BUMP - INCHANGÉ
       # ========================================
       - name: 🔢 Bump Build Version
         run: |
-          cd ios/App/App
+          cd app/ios/App/App
           NEW_BUILD_NUMBER=$((${{ github.run_number }} + 88))
           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $NEW_BUILD_NUMBER" Info.plist
           echo "✅ Build version updated to: $NEW_BUILD_NUMBER"
 
       # ========================================
-      # 5️⃣ CERTIFICATS
+      # 5️⃣ CERTIFICATS - INCHANGÉ
       # ========================================
       - name: 🔐 Import certificate & profile
         env:
@@ -133,44 +139,49 @@ jobs:
           security default-keychain -s ios.keychain
           security unlock-keychain -p actions ios.keychain
           security set-keychain-settings -t 3600 -u ios.keychain
-          
+
           echo "${{ secrets.IOS_CERTIFICATE_P12 }}" | base64 --decode > /tmp/cert.p12
+
           if [ -z "$P12_PASSWORD" ]; then
             security import /tmp/cert.p12 -k ios.keychain -T /usr/bin/codesign -P ""
           else
             security import /tmp/cert.p12 -k ios.keychain -T /usr/bin/codesign -P "$P12_PASSWORD"
           fi
+
           security set-key-partition-list -S apple-tool:,apple: -s -k actions ios.keychain
           rm -f /tmp/cert.p12
-          
+
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
           echo "${{ secrets.IOS_PROVISIONING_PROFILE }}" | base64 --decode > /tmp/profile.mobileprovision
+
           PROFILE_UUID=$(/usr/libexec/PlistBuddy -c "Print :UUID" /dev/stdin <<< $(security cms -D -i /tmp/profile.mobileprovision))
           cp /tmp/profile.mobileprovision ~/Library/MobileDevice/Provisioning\ Profiles/${PROFILE_UUID}.mobileprovision
+
           echo "PROFILE_UUID=${PROFILE_UUID}" >> $GITHUB_ENV
           rm -f /tmp/profile.mobileprovision
 
       - name: 🔧 Fix build settings & Add Firebase Config
         run: |
-          cd ios/App
+          cd app/ios/App
           ruby << 'RUBY'
           require 'xcodeproj'
-          
+
           project_path = 'App.xcodeproj'
           project = Xcodeproj::Project.open(project_path)
           app_target = project.targets.find { |t| t.name == 'App' }
-          
+
           # 1. S'assurer que GoogleService-Info.plist est dans le projet et la cible
           file_name = 'GoogleService-Info.plist'
           file_path = "App/#{file_name}"
-          
+
           # Vérifier si le fichier est déjà dans le projet, sinon l'ajouter
           file_ref = project.main_group['App'].files.find { |f| f.path == file_name }
+
           if file_ref.nil?
             file_ref = project.main_group['App'].new_file(file_name)
             puts "➕ Added #{file_name} to project"
           end
-          
+
           # L'ajouter aux ressources de la cible App (pour qu'il soit dans l'IPA)
           unless app_target.resources_build_phase.files_references.include?(file_ref)
             app_target.add_resources([file_ref])
@@ -182,7 +193,7 @@ jobs:
             config.build_settings['CODE_SIGN_STYLE'] = 'Manual'
             config.build_settings['CODE_SIGN_ENTITLEMENTS'] = 'App/App.entitlements'
           end
-          
+
           # 3. Fix Pod targets
           if File.exist?('Pods/Pods.xcodeproj')
             pods_project = Xcodeproj::Project.open('Pods/Pods.xcodeproj')
@@ -196,18 +207,18 @@ jobs:
             end
             pods_project.save
           end
-          
+
           project.save
           puts "✅ Xcode project updated successfully"
           RUBY
 
       # ========================================
-      # 7️⃣ BUILD & EXPORT
+      # 7️⃣ BUILD & EXPORT - INCHANGÉ
       # ========================================
       - name: 🔨 Build archive & export IPA
         run: |
-          cd ios/App
-          
+          cd app/ios/App
+
           xcodebuild archive \
             -workspace App.xcworkspace \
             -scheme App \
@@ -221,7 +232,7 @@ jobs:
             PROVISIONING_PROFILE="${{ env.PROFILE_UUID }}" \
             CODE_SIGN_ENTITLEMENTS="App/App.entitlements" \
             IPHONEOS_DEPLOYMENT_TARGET=14.0
-          
+
           cat > exportOptions.plist << EOF
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -245,7 +256,7 @@ jobs:
           </dict>
           </plist>
           EOF
-          
+
           xcodebuild -exportArchive \
             -archivePath build/App.xcarchive \
             -exportPath build \
@@ -253,12 +264,12 @@ jobs:
             -allowProvisioningUpdates
 
       # ========================================
-      # 8️⃣ UPLOAD
+      # 8️⃣ UPLOAD - INCHANGÉ
       # ========================================
       - name: 🚀 Upload to TestFlight
         uses: apple-actions/upload-testflight-build@v1
         with:
-          app-path: ios/App/build/App.ipa
+          app-path: app/ios/App/build/App.ipa
           issuer-id: ${{ secrets.APPSTORE_ISSUER_ID }}
           api-key-id: ${{ secrets.APPSTORE_API_KEY_ID }}
           api-private-key: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
@@ -268,6 +279,5 @@ jobs:
         if: always()
         with:
           name: ios-app-${{ github.run_number }}
-          path: ios/App/build/App.ipa
+          path: app/ios/App/build/App.ipa
           retention-days: 30
-          

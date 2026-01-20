@@ -7,9 +7,10 @@ jobs:
   build-ios:
     name: Build iOS App
     runs-on: macos-15
+    environment: production
     timeout-minutes: 60
 
-    # 🔐 SÉCURITÉ: Protection multi-niveaux
+    # 🔒 SÉCURITÉ: Protection multi-niveaux
     environment: production  # Require manual approval
     if: |
       github.event_name == 'workflow_dispatch' &&
@@ -284,42 +285,15 @@ jobs:
             -allowProvisioningUpdates
 
       # ========================================
-      # 8️⃣ UPLOAD WITH NOTARYTOOL - FIXED
+      # 8️⃣ UPLOAD - CORRIGÉ
       # ========================================
-      - name: 🚀 Upload to App Store Connect
-        run: |
-          cd app/ios/App/build
-
-          echo "🚀 Uploading IPA to App Store Connect..."
-          
-          # Create temporary key file
-          KEY_FILE=$(mktemp)
-          echo "${{ secrets.APPSTORE_API_PRIVATE_KEY }}" > "$KEY_FILE"
-          chmod 600 "$KEY_FILE"
-          
-          # Use notarytool with the key file
-          xcrun notarytool submit App.ipa \
-            --key "$KEY_FILE" \
-            --key-id "${{ secrets.APPSTORE_API_KEY_ID }}" \
-            --issuer "${{ secrets.APPSTORE_ISSUER_ID }}" \
-            --wait \
-            2>&1 | tee upload.log
-
-          # Clean up
-          rm -f "$KEY_FILE"
-          
-          echo ""
-          echo "Upload completed. Check logs above for details."
-          echo ""
-
-          # Check if successful
-          if grep -qi "accepted" upload.log || grep -qi "success" upload.log || ! grep -qi "error" upload.log; then
-            echo "✅ Upload to App Store successful!"
-          else
-            echo "Upload output:"
-            cat upload.log
-            exit 1
-          fi
+      - name: 🚀 Upload to TestFlight
+        uses: apple-actions/upload-testflight-build@v1
+        with:
+          app-path: app/ios/App/build/App.ipa
+          issuer-id: ${{ secrets.APPSTORE_ISSUER_ID }}
+          api-key-id: ${{ secrets.APPSTORE_API_KEY_ID }}
+          api-private-key: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
 
       - name: 💾 Save artifact
         uses: actions/upload-artifact@v4

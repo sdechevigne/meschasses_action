@@ -1,4 +1,4 @@
-name: 🤖 Build & Deploy Android - Google Play Store (Capacitor 7)
+name: 🤖 Build & Deploy Android
 
 on:
   workflow_dispatch:
@@ -32,8 +32,6 @@ jobs:
       # ========================================
       - name: 📥 Checkout main repo (code React Native)
         uses: actions/checkout@v4
-        with:
-          path: app
 
       - name: 📥 Checkout native Android repo
         uses: actions/checkout@v4
@@ -60,13 +58,7 @@ jobs:
       - name: 🔧 Setup Android SDK
         uses: android-actions/setup-android@v3
         with:
-          api-level: 35
-          ndk-version: '26.1.10909125'
-
-      - name: 💾 Cache Gradle
-        uses: gradle/gradle-build-action@v2
-        with:
-          cache-read-only: false
+          packages: 'platform-tools platforms;android-35 build-tools;35.0.0 ndk;26.1.10909125'
 
       # ========================================
       # 2️⃣ COPY NATIVE PLATFORM
@@ -74,41 +66,36 @@ jobs:
       - name: 📂 Copy Android platform to app
         run: |
           echo "📋 Copying android/ from native repo..."
-          cp -r native/android app/
+          cp -r native/android ./
           echo "📋 Copying whatsnew/ if exists..."
           if [ -d native/whatsnew ]; then
-            cp -r native/whatsnew app/
+            cp -r native/whatsnew ./
           else
             echo "⚠️ whatsnew/ directory not found, skipping"
           fi
           echo "✅ Native platform copied"
-          ls -la app/
+          ls -la
 
       # ========================================
       # 3️⃣ BUILD WEB & CONFIG
       # ========================================
       - name: 📚 Install dependencies
         run: |
-          cd app
           rm -rf node_modules package-lock.json
           npm install
 
       - name: 🏗️ Build web app
-        run: |
-          cd app
-          npm run build
+        run: npm run build
         env:
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
           VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
           VITE_POSTHOG_KEY: ${{ secrets.VITE_POSTHOG_KEY }}
 
       - name: 📱 Sync Capacitor Android
-        run: |
-          cd app
-          npx cap sync android
+        run: npx cap sync android
 
       - name: 🔐 Fix gradlew permissions
-        run: chmod +x app/android/gradlew
+        run: chmod +x android/gradlew
 
       # ========================================
       # 4️⃣ CONFIGURE KEYSTORE & SIGNING
@@ -119,7 +106,7 @@ jobs:
           KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
           KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
         run: |
-          cd app/android
+          cd android
           mkdir -p app
 
           # Decode keystore
@@ -151,19 +138,17 @@ jobs:
           echo ""
           echo "📋 DEBUG: Keystore files created:"
           ls -lah app/release.keystore || echo "❌ Keystore not found!"
-          echo ""
-          echo "📋 DEBUG: gradle.properties content:"
-          grep -v "PASSWORD\|KEY_" gradle.properties
+          pwd
           echo ""
 
       - name: 🔍 Verify Keystore
         run: |
-          cd app/android
+          cd android
           if [ -f app/release.keystore ]; then
             keytool -list -v \
               -keystore app/release.keystore \
               -storepass "${{ secrets.ANDROID_KEYSTORE_PASSWORD }}" > /dev/null 2>&1
-            echo "✅ Keystore vérifié (silent mode)"
+            echo "✅ Keystore vérifié"
           else
             echo "❌ Keystore file not found!"
             exit 1
@@ -174,17 +159,17 @@ jobs:
       # ========================================
       - name: 🔧 Configure local.properties
         run: |
-          cd app/android
+          cd android
           cat > local.properties << EOF
           sdk.dir=${ANDROID_SDK_ROOT}
-          ndk.dir=${ANDROID_NDK_ROOT}
+          ndk.dir=${ANDROID_SDK_ROOT}/ndk/26.1.10909125
           EOF
 
           echo "✅ local.properties configuré"
 
       - name: 🔢 Update App Version
         run: |
-          cd app/android/app
+          cd android/app
 
           VERSION=$(grep '"version"' ../../package.json | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
           BUILD_NUMBER="${{ github.run_number }}"
@@ -206,7 +191,7 @@ jobs:
 
       - name: 🔧 Disable Lint Errors for Release
         run: |
-          cd app/android/app
+          cd android/app
 
           echo "📋 Adding lint config to suppress MissingDefaultResource..."
 
@@ -222,7 +207,7 @@ jobs:
       # ========================================
       - name: 🔥 Setup Firebase Config
         run: |
-          cd app/android
+          cd android
           if [ -z "${{ secrets.ANDROID_GOOGLE_SERVICES_JSON }}" ]; then
             echo "⚠️ Google Services JSON secret not found"
           else
@@ -240,7 +225,7 @@ jobs:
           KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
           KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
         run: |
-          cd app/android
+          cd android
 
           echo "📋 Running bundleRelease task..."
           ./gradlew bundleRelease \
@@ -265,7 +250,7 @@ jobs:
           KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
           KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
         run: |
-          cd app/android
+          cd android
 
           echo "📋 Running assembleRelease task..."
           ./gradlew assembleRelease \
@@ -287,11 +272,11 @@ jobs:
         with:
           serviceAccountJsonPlainText: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
           packageName: ${{ secrets.ANDROID_PACKAGE_NAME }}
-          releaseFiles: 'app/android/app/build/outputs/bundle/release/app-release.aab'
+          releaseFiles: 'android/app/build/outputs/bundle/release/app-release.aab'
           track: internal
           inAppUpdatePriority: 5
           status: draft
-          whatsNewDirectory: app/whatsnew
+          whatsNewDirectory: whatsnew
 
       # ========================================
       # 9️⃣ CLEANUP & SECURITY
@@ -299,7 +284,7 @@ jobs:
       - name: 🧹 Cleanup sensitive files
         if: always()
         run: |
-          cd app/android
+          cd android
           if [ -f app/release.keystore ]; then
             shred -vfz -n 10 app/release.keystore 2>/dev/null || rm -f app/release.keystore
             echo "🧹 Keystore securely deleted"

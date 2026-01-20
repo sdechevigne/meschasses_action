@@ -284,36 +284,51 @@ jobs:
             -allowProvisioningUpdates
 
       # ========================================
-      # 8️⃣ UPLOAD WITH XCRUN NOTARYTOOL - CORRIGÉ
+      # 8️⃣ UPLOAD WITH ALTOOL - FIXED SYNTAX
       # ========================================
-      - name: 🚀 Upload to TestFlight with notarytool
+      - name: 🚀 Upload to TestFlight with altool
         run: |
           cd app/ios/App/build
 
-          # Create a temporary file for the private key
-          echo "${{ secrets.APPSTORE_API_PRIVATE_KEY }}" > /tmp/private_key.p8
+          # Create private_keys directory
+          mkdir -p ~/.appstoreconnect/private_keys
 
-          echo "🔐 Uploading IPA with xcrun notarytool..."
-          
-          xcrun altool --output-format json --upload-app \
+          # Write the API key with proper naming (without .p8 extension)
+          KEY_ID="${{ secrets.APPSTORE_API_KEY_ID }}"
+          echo "${{ secrets.APPSTORE_API_PRIVATE_KEY }}" > ~/.appstoreconnect/private_keys/AuthKey_${KEY_ID}.p8
+
+          echo "🔐 Uploading IPA with xcrun altool..."
+          echo "Key location: ~/.appstoreconnect/private_keys/AuthKey_${KEY_ID}.p8"
+
+          # Verify key file was created
+          if [ ! -f ~/.appstoreconnect/private_keys/AuthKey_${KEY_ID}.p8 ]; then
+            echo "❌ ERROR: Key file not created!"
+            exit 1
+          fi
+
+          # Upload using altool with correct syntax
+          xcrun altool --output-format json \
+            --upload-app \
             --file App.ipa \
             --type ios \
-            --apiKey /tmp/private_key.p8 \
+            --apiKeyId "${KEY_ID}" \
             --apiIssuer "${{ secrets.APPSTORE_ISSUER_ID }}" \
-            --apiKeyId "${{ secrets.APPSTORE_API_KEY_ID }}" \
             2>&1 | tee upload.log
 
           # Clean up
-          rm -f /tmp/private_key.p8
+          rm -f ~/.appstoreconnect/private_keys/AuthKey_${KEY_ID}.p8
 
           # Check if successful
-          if grep -q "\"success\"" upload.log || grep -q "\"Success\"" upload.log; then
+          echo ""
+          echo "Upload response:"
+          cat upload.log
+          echo ""
+
+          if grep -q '"success":true' upload.log 2>/dev/null || grep -q 'RequestUUID' upload.log 2>/dev/null; then
             echo "✅ Upload successful!"
-          else
-            echo "Upload output:"
-            cat upload.log
-            echo ""
-            echo "⚠️ Check the output above for details"
+          elif grep -q 'product-errors' upload.log 2>/dev/null; then
+            echo "⚠️ Upload encountered errors. Check logs above."
+            exit 1
           fi
 
       - name: 💾 Save artifact

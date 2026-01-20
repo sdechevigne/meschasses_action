@@ -111,7 +111,7 @@ jobs:
         run: chmod +x app/android/gradlew
 
       # ========================================
-      # 4️⃣ CONFIGURE KEYSTORE & SIGNING - FIXED
+      # 4️⃣ CONFIGURE KEYSTORE & SIGNING - CORRIGÉ
       # ========================================
       - name: 🔑 Create Keystore from Secret
         env:
@@ -122,7 +122,7 @@ jobs:
           cd app/android
           mkdir -p app
 
-          # Decode keystore WITHOUT logging
+          # 1. Création physique (On garde app/ car on est dans app/android)
           echo "${{ secrets.ANDROID_KEYSTORE_FILE }}" | base64 --decode > app/release.keystore 2>/dev/null
           
           # Verify file exists
@@ -131,46 +131,23 @@ jobs:
             exit 1
           fi
           
-          # Set restrictive permissions (600 = rw-------)
           chmod 600 app/release.keystore
-          echo "✅ Keystore created with secure permissions (600)"
+          echo "✅ Keystore created at app/android/app/release.keystore"
 
-          # Create fresh gradle.properties
-          if [ -f gradle.properties ]; then
-            mv gradle.properties gradle.properties.bak
-            echo "📦 Backed up old gradle.properties"
-          fi
-
-          # ✅ Config gradle.properties - APPEND safely
-          # 👇 FORCER LE SAUT DE LIGNE AVANT D'AJOUTER 👇
+          # 2. Config gradle.properties
+          # ATTENTION : Ici on met juste 'release.keystore' pour Gradle
           echo "" >> gradle.properties 2>/dev/null || true
 
           cat >> gradle.properties << 'EOF'
-          # AndroidX
           android.useAndroidX=true
           android.enableJetifier=true
-          
-          # Keystore Configuration
-          KEYSTORE_FILE=app/release.keystore
+          KEYSTORE_FILE=release.keystore
           KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD
           KEY_ALIAS=$KEY_ALIAS
           KEY_PASSWORD=$KEY_PASSWORD
           EOF
           
-          echo "✅ gradle.properties configured"
-
-      - name: 🔧 Fix Keystore Path in build.gradle
-        run: |
-          cd app/android/app
-          
-          echo "📋 Checking current keystore path..."
-          if grep -q "app/app/release.keystore" build.gradle 2>/dev/null; then
-            echo "⚠️ Found duplicate 'app/app/release.keystore' - fixing..."
-            sed -i 's|app/app/release.keystore|app/release.keystore|g' build.gradle
-            echo "✅ Fixed keystore path in build.gradle"
-          else
-            echo "✅ Keystore path is correct"
-          fi
+          echo "✅ gradle.properties configured with relative path"
 
       - name: 🔍 Verify Keystore
         env:
@@ -182,7 +159,7 @@ jobs:
             exit 1
           fi
           
-          # Silent verification - no output
+          # Silent verification
           keytool -list -v \
             -keystore app/release.keystore \
             -storepass "$KEYSTORE_PASSWORD" \
@@ -237,11 +214,11 @@ jobs:
           else
             echo "${{ secrets.ANDROID_GOOGLE_SERVICES_JSON }}" | base64 --decode > app/google-services.json 2>/dev/null
             chmod 600 app/google-services.json
-            echo "✅ google-services.json configured (permissions: 600)"
+            echo "✅ google-services.json configured"
           fi
 
       # ========================================
-      # 7️⃣ BUILD ANDROID APP
+      # 7️⃣ BUILD ANDROID APP - CORRIGÉ
       # ========================================
       - name: 🔨 Build Release Bundle (AAB)
         env:
@@ -251,8 +228,9 @@ jobs:
         run: |
           cd app/android
 
+          # CORRECTION: Utilisation de release.keystore (chemin relatif au module app)
           ./gradlew bundleRelease \
-            -DKEYSTORE_FILE=app/release.keystore \
+            -DKEYSTORE_FILE=release.keystore \
             -DKEYSTORE_PASSWORD="$KEYSTORE_PASSWORD" \
             -DKEY_ALIAS="$KEY_ALIAS" \
             -DKEY_PASSWORD="$KEY_PASSWORD" \
@@ -275,8 +253,9 @@ jobs:
         run: |
           cd app/android
 
+          # CORRECTION: Utilisation de release.keystore
           ./gradlew assembleRelease \
-            -DKEYSTORE_FILE=app/release.keystore \
+            -DKEYSTORE_FILE=release.keystore \
             -DKEYSTORE_PASSWORD="$KEYSTORE_PASSWORD" \
             -DKEY_ALIAS="$KEY_ALIAS" \
             -DKEY_PASSWORD="$KEY_PASSWORD" \
@@ -304,20 +283,13 @@ jobs:
         if: always()
         run: |
           cd app/android
-          # Securely delete keystore
           if [ -f app/release.keystore ]; then
-            shred -vfz -n 10 app/release.keystore 2>/dev/null || rm -f app/release.keystore
-            echo "🧹 Keystore securely deleted"
+            rm -f app/release.keystore
+            echo "🧹 Keystore deleted"
           fi
           
-          # Delete backup
-          if [ -f gradle.properties.bak ]; then
-            rm -f gradle.properties.bak
-          fi
-          
-          # Delete google-services.json
           if [ -f app/google-services.json ]; then
-            shred -vfz -n 10 app/google-services.json 2>/dev/null || rm -f app/google-services.json
+            rm -f app/google-services.json
             echo "🧹 Google Services config deleted"
           fi
 
@@ -326,21 +298,17 @@ jobs:
         run: |
           BUILD_NUMBER="${{ github.run_number }}"
           echo "🎉 Android Build #$BUILD_NUMBER uploaded to Google Play Store (DRAFT)"
-          echo "📦 Status: Draft (internal track - ready for testing)"
 
       - name: 🗑️ DELETE RUN - No Public Trace
         if: success()
         run: |
-          echo "🗑️ Deleting workflow run to hide build artifacts..."
+          echo "🗑️ Deleting workflow run..."
           sleep 5
           gh run delete ${{ github.run_id }} --repo ${{ github.repository }}
-          echo "✅ Run deleted - zero public history"
         env:
           GH_TOKEN: ${{ github.token }}
 
       - name: 🔴 KEEP RUN for debugging - FAILED
         if: failure()
         run: |
-          echo "🔴 Build failed - run preserved for investigation"
-          echo "📋 Check logs for errors"
-
+          echo "🔴 Build failed - run preserved"

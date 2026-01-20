@@ -134,14 +134,14 @@ jobs:
           
           # ✅ Create FRESH gradle.properties with signing config
           cat > gradle.properties << 'EOF'
-# AndroidX
-android.useAndroidX=true
-android.enableJetifier=true
-
-# Keystore (direct paths, no variables)
-KEYSTORE_FILE=release.keystore
-org.gradle.jvmargs=-Xmx2048m
-EOF
+          # AndroidX
+          android.useAndroidX=true
+          android.enableJetifier=true
+          
+          # Keystore (direct paths, no variables)
+          KEYSTORE_FILE=release.keystore
+          org.gradle.jvmargs=-Xmx2048m
+          EOF
 
           # ✅ Add dynamic values
           echo "KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD" >> gradle.properties

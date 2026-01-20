@@ -106,7 +106,7 @@ jobs:
           echo "${{ secrets.ANDROID_KEYSTORE_FILE }}" | base64 --decode > app/release.keystore
           
           # 2. Configuration Gradle (Avec cat << EOF pour la sécurité)
-          # Note: On utilise 'app/release.keystore' comme dans votre version qui fonctionnait
+          # Note: On utilise 'release.keystore' comme dans votre version qui fonctionnait
           cat >> gradle.properties << EOF
           
           # Optimisations
@@ -170,3 +170,4 @@ jobs:
           gh run delete ${{ github.run_id }} --repo ${{ github.repository }}
         env:
           GH_TOKEN: ${{ secrets.CI_PAT_TOKEN }}
+

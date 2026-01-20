@@ -284,15 +284,33 @@ jobs:
             -allowProvisioningUpdates
 
       # ========================================
-      # 8️⃣ UPLOAD - CORRIGÉ
+      # 8️⃣ UPLOAD WITH NOTARYTOOL - WORKING
       # ========================================
-      - name: 🚀 Upload to TestFlight
-        uses: apple-actions/upload-testflight-build@v1
-        with:
-          app-path: app/ios/App/build/App.ipa
-          issuer-id: ${{ secrets.APPSTORE_ISSUER_ID }}
-          api-key-id: ${{ secrets.APPSTORE_API_KEY_ID }}
-          api-private-key: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
+      - name: 🚀 Upload to App Store Connect
+        run: |
+          cd app/ios/App/build
+
+          echo "🚀 Uploading IPA to App Store Connect..."
+          
+          # Use notarytool directly (modern Apple tool, works on macOS 15)
+          xcrun notarytool submit App.ipa \
+            --key <(echo "${{ secrets.APPSTORE_API_PRIVATE_KEY }}") \
+            --key-id "${{ secrets.APPSTORE_API_KEY_ID }}" \
+            --issuer "${{ secrets.APPSTORE_ISSUER_ID }}" \
+            --wait \
+            2>&1 | tee upload.log
+
+          echo ""
+          echo "Upload completed. Check logs above for details."
+          echo ""
+
+          # Check if successful (look for success message)
+          if grep -qi "accepted" upload.log || grep -qi "success" upload.log; then
+            echo "✅ Upload to App Store successful!"
+          else
+            echo "Upload output:"
+            cat upload.log
+          fi
 
       - name: 💾 Save artifact
         uses: actions/upload-artifact@v4

@@ -7,6 +7,7 @@ jobs:
   build-ios:
     name: Build iOS App
     runs-on: macos-15
+    environment: production
     timeout-minutes: 60
 
     # 🔒 SÉCURITÉ: Protection multi-niveaux

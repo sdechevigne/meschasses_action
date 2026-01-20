@@ -284,15 +284,37 @@ jobs:
             -allowProvisioningUpdates
 
       # ========================================
-      # 8️⃣ UPLOAD - INCHANGÉ
+      # 8️⃣ UPLOAD WITH XCRUN NOTARYTOOL - CORRIGÉ
       # ========================================
-      - name: 🚀 Upload to TestFlight
-        uses: apple-actions/upload-testflight-build@v1
-        with:
-          app-path: app/ios/App/build/App.ipa
-          issuer-id: ${{ secrets.APPSTORE_ISSUER_ID }}
-          api-key-id: ${{ secrets.APPSTORE_API_KEY_ID }}
-          api-private-key: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
+      - name: 🚀 Upload to TestFlight with notarytool
+        run: |
+          cd app/ios/App/build
+
+          # Create a temporary file for the private key
+          echo "${{ secrets.APPSTORE_API_PRIVATE_KEY }}" > /tmp/private_key.p8
+
+          echo "🔐 Uploading IPA with xcrun notarytool..."
+          
+          xcrun altool --output-format json --upload-app \
+            --file App.ipa \
+            --type ios \
+            --apiKey /tmp/private_key.p8 \
+            --apiIssuer "${{ secrets.APPSTORE_ISSUER_ID }}" \
+            --apiKeyId "${{ secrets.APPSTORE_API_KEY_ID }}" \
+            2>&1 | tee upload.log
+
+          # Clean up
+          rm -f /tmp/private_key.p8
+
+          # Check if successful
+          if grep -q "\"success\"" upload.log || grep -q "\"Success\"" upload.log; then
+            echo "✅ Upload successful!"
+          else
+            echo "Upload output:"
+            cat upload.log
+            echo ""
+            echo "⚠️ Check the output above for details"
+          fi
 
       - name: 💾 Save artifact
         uses: actions/upload-artifact@v4

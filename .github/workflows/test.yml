@@ -1,0 +1,285 @@
+name: 🤖 Build & Deploy Android
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-android:
+    name: Build Android App
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      # ========================================
+      # 1️⃣ SETUP & CHECKOUT REPOS
+      # ========================================
+
+      - name: 📥 Checkout main repo (code React Native)
+        uses: actions/checkout@v4
+        with:
+          path: app
+
+      - name: 📥 Checkout native Android repo
+        uses: actions/checkout@v4
+        with:
+          repository: sdechevigne/meschasses_natives
+          token: ${{ secrets.PAT_TOKEN }}
+          path: native
+          sparse-checkout: |
+            android
+            whatsnew
+
+      - name: 📦 Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: ☕ Setup Java (JDK 21 pour Capacitor 7)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+          cache: gradle
+
+      - name: 🔧 Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          api-level: 35
+          ndk-version: '26.1.10909125'
+
+      - name: 💾 Cache Gradle
+        uses: gradle/gradle-build-action@v2
+        with:
+          cache-read-only: false
+
+
+      # ========================================
+      # 2️⃣ COPY NATIVE PLATFORM
+      # ========================================
+
+      - name: 📂 Copy Android platform to app
+        run: |
+          echo "📋 Copying android/ from native repo..."
+          cp -r native/android app/
+          
+          echo "📋 Copying whatsnew/ if exists..."
+          if [ -d native/whatsnew ]; then
+            cp -r native/whatsnew app/
+          else
+            echo "⚠️ whatsnew/ directory not found, skipping"
+          fi
+          
+          echo "✅ Native platform copied"
+          ls -la app/
+
+      # ========================================
+      # 3️⃣ BUILD WEB & CONFIG
+      # ========================================
+
+      - name: 📚 Install dependencies
+        run: |
+          cd app
+          rm -rf node_modules package-lock.json
+          npm install
+
+      - name: 🏗️ Build web app
+        run: |
+          cd app
+          npm run build
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+          VITE_POSTHOG_KEY: ${{ secrets.VITE_POSTHOG_KEY }}
+
+      - name: 📱 Sync Capacitor Android
+        run: |
+          cd app
+          npx cap sync android
+
+      - name: 🔐 Fix gradlew permissions
+        run: chmod +x app/android/gradlew
+
+      # ========================================
+      # 4️⃣ CONFIGURE KEYSTORE & SIGNING
+      # ========================================
+
+      - name: 🔑 Create Keystore from Secret
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          cd app/android
+          mkdir -p app
+          echo "${{ secrets.ANDROID_KEYSTORE_FILE }}" | base64 --decode > app/release.keystore
+                  
+          # ✅ Config gradle.properties
+          cat >> gradle.properties << EOF
+          
+          # AndroidX
+          android.useAndroidX=true
+          android.enableJetifier=true
+          
+          # Keystore
+          KEYSTORE_FILE=app/release.keystore
+          KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD
+          KEY_ALIAS=$KEY_ALIAS
+          KEY_PASSWORD=$KEY_PASSWORD
+          EOF
+          
+          echo "✅ Keystore configuré"
+
+      - name: 🔍 Verify Keystore
+        run: |
+          cd app/android
+          if [ -f app/release.keystore ]; then
+            keytool -list -v \
+              -keystore app/release.keystore \
+              -storepass "${{ secrets.ANDROID_KEYSTORE_PASSWORD }}" | head -20
+            echo "✅ Keystore vérifié"
+          else
+            echo "❌ Keystore file not found!"
+            exit 1
+          fi
+
+      # ========================================
+      # 5️⃣ CONFIGURE GRADLE BUILD
+      # ========================================
+
+      - name: 🔧 Configure local.properties
+        run: |
+          cd app/android
+          cat > local.properties << EOF
+          sdk.dir=${ANDROID_SDK_ROOT}
+          ndk.dir=${ANDROID_NDK_ROOT}
+          EOF
+          
+          echo "✅ local.properties configuré"
+
+      - name: 🔢 Update App Version
+        run: |
+          cd app/android/app
+          
+          VERSION=$(grep '"version"' ../../package.json | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
+          BUILD_NUMBER="${{ github.run_number }}"
+          
+          MAJOR=$(echo $VERSION | cut -d. -f1)
+          MINOR=$(echo $VERSION | cut -d. -f2)
+          PATCH=$(echo $VERSION | cut -d. -f3)
+          
+          VERSION_CODE=$((MAJOR * 1000000 + MINOR * 1000 + PATCH * 10 + BUILD_NUMBER))
+          VERSION_NAME="$VERSION-build.$BUILD_NUMBER"
+          
+          if [ -f build.gradle ]; then
+            sed -i "s/versionCode [0-9]*/versionCode $VERSION_CODE/" build.gradle
+            sed -i "s/versionName \"[^\"]*\"/versionName \"$VERSION_NAME\"/" build.gradle
+            echo "✅ build.gradle mis à jour"
+          fi
+          
+          echo "✅ Version: $VERSION_CODE / $VERSION_NAME"
+
+      # ========================================
+      # 6️⃣ SETUP FIREBASE
+      # ========================================
+
+      - name: 🔥 Setup Firebase Config
+        run: |
+          cd app/android
+          if [ -z "${{ secrets.ANDROID_GOOGLE_SERVICES_JSON }}" ]; then
+            echo "⚠️ Google Services JSON secret not found"
+          else
+            echo "${{ secrets.ANDROID_GOOGLE_SERVICES_JSON }}" | base64 --decode > app/google-services.json
+            echo "✅ google-services.json configuré"
+          fi
+
+      # ========================================
+      # 7️⃣ BUILD ANDROID APP
+      # ========================================
+
+      - name: 🔨 Build Release Bundle (AAB)
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          cd app/android
+          
+          ./gradlew bundleRelease \
+            -DKEYSTORE_FILE=app/release.keystore \
+            -DKEYSTORE_PASSWORD="$KEYSTORE_PASSWORD" \
+            -DKEY_ALIAS="$KEY_ALIAS" \
+            -DKEY_PASSWORD="$KEY_PASSWORD" \
+            -PsignedBuildType=release \
+            --stacktrace \
+            2>&1 | tee build.log
+          
+          if grep -q "BUILD SUCCESSFUL" build.log; then
+            echo "✅ AAB build successful"
+          else
+            echo "❌ Build failed"
+            exit 1
+          fi
+
+      - name: 🔐 Build & Sign APK
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          cd app/android
+          ./gradlew assembleRelease \
+            -DKEYSTORE_FILE=app/release.keystore \
+            -DKEYSTORE_PASSWORD="$KEYSTORE_PASSWORD" \
+            -DKEY_ALIAS="$KEY_ALIAS" \
+            -DKEY_PASSWORD="$KEY_PASSWORD" \
+            -PsignedBuildType=release \
+            --stacktrace
+
+      # ========================================
+      # 8️⃣ PUBLISH TO GOOGLE PLAY STORE
+      # ========================================
+
+      - name: 🚀 Upload to Google Play Draft
+        uses: r0adkll/upload-google-play@v1
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
+          packageName: ${{ secrets.ANDROID_PACKAGE_NAME }}
+          releaseFiles: 'app/android/app/build/outputs/bundle/release/app-release.aab'
+          track: internal
+          inAppUpdatePriority: 5
+          status: draft
+          whatsNewDirectory: app/whatsnew
+
+      # ========================================
+      # 9️⃣ UPLOAD ARTIFACTS
+      # ========================================
+
+      - name: 💾 Save artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-app-${{ github.run_number }}
+          path: |
+            app/android/app/build/outputs/apk/release/app-release.apk
+            app/android/app/build/outputs/bundle/release/app-release.aab
+          retention-days: 30
+
+      - name: 📊 Build Summary
+        if: always()
+        run: |
+          cd app/android
+          echo "🎯 Build Summary"
+          echo "================"
+          
+          AAB_PATH="app/build/outputs/bundle/release/app-release.aab"
+          APK_PATH="app/build/outputs/apk/release/app-release.apk"
+          
+          if [ -f "$AAB_PATH" ]; then
+            AAB_SIZE=$(du -h "$AAB_PATH" | cut -f1)
+            echo "✅ AAB: $AAB_SIZE"
+          fi
+          
+          if [ -f "$APK_PATH" ]; then
+            APK_SIZE=$(du -h "$APK_PATH" | cut -f1)
+            echo "✅ APK: $APK_SIZE"
+          fi

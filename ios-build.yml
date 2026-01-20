@@ -1,0 +1,273 @@
+name: 🍎 Build & Deploy iOS
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-ios:
+    name: Build iOS App
+    runs-on: macos-15
+    timeout-minutes: 60
+
+    steps:
+      # ========================================
+      # 1️⃣ CHECKOUT
+      # ========================================
+      - name: 📥 Checkout React code
+        uses: actions/checkout@v4
+
+      - name: 📥 Checkout native iOS
+        uses: actions/checkout@v4
+        with:
+          repository: sdechevigne/meschasses_natives
+          token: ${{ secrets.PAT_TOKEN }}
+          path: native-temp
+          sparse-checkout: |
+            ios
+            whatsnew
+
+      - name: 📂 Copy iOS from native repo
+        run: |
+          rm -rf ios
+          cp -r native-temp/ios .
+          if [ -d native-temp/whatsnew ]; then
+            cp -r native-temp/whatsnew .
+          fi
+          echo "✅ iOS copied"
+
+      # ========================================
+      # 2️⃣ SETUP & BUILD
+      # ========================================
+      - name: 📦 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: 🔧 Install dependencies
+        run: npm install
+
+      - name: 🏗️ Build web app
+        run: npm run build
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+          VITE_POSTHOG_KEY: ${{ secrets.VITE_POSTHOG_KEY }}
+
+      - name: 📱 Sync Capacitor
+        run: npx cap sync ios
+
+      - name: 🔥 Verify Firebase in Podfile
+        run: |
+          cd ios/App
+          
+          echo "🔍 Checking Firebase pods in Podfile..."
+          
+          # Vérifier que Firebase est présent
+          if ! grep -q "CapacitorFirebaseApp" Podfile; then
+            echo "❌ ERROR: Firebase pods missing from Podfile!"
+            echo "This might happen if cap sync overwrites the Podfile."
+            echo ""
+            echo "📋 Current Podfile content:"
+            cat Podfile
+            exit 1
+          fi
+          
+          # Vérifier GoogleService-Info.plist
+          if [ ! -f App/GoogleService-Info.plist ]; then
+            echo "❌ ERROR: GoogleService-Info.plist not found!"
+            exit 1
+          fi
+          
+          echo "✅ Firebase configuration verified"
+          echo "  - CapacitorFirebaseApp: found in Podfile"
+          echo "  - CapacitorFirebaseAuthentication: found in Podfile"
+          echo "  - GoogleService-Info.plist: present"
+
+      # ========================================
+      # 3️⃣ COCOAPODS
+      # ========================================
+      - name: 💎 Install CocoaPods
+        run: |
+          gem install xcodeproj cocoapods
+          cd ios/App
+          rm -rf Pods Podfile.lock
+          pod install --repo-update
+
+      - name: 🔐 Verify Privacy Manifests
+        run: |
+          cd ios/App
+          
+          echo "🔍 Checking for Privacy Manifests..."
+          
+          # Rechercher les Privacy Manifests Firebase/Google
+          MANIFESTS=$(find Pods -name "PrivacyInfo.xcprivacy" | grep -E "(Firebase|Google|GTM)" || true)
+          
+          if [ -z "$MANIFESTS" ]; then
+            echo "⚠️ WARNING: No Privacy Manifests found for Firebase/Google SDKs"
+            echo "This might cause Apple rejection!"
+          else
+            echo "✅ Privacy Manifests found:"
+            echo "$MANIFESTS" | while read file; do
+              echo "  - $(basename $(dirname $file))"
+            done
+          fi
+
+      # ========================================
+      # 4️⃣ VERSION BUMP ONLY
+      # ========================================
+      - name: 🔢 Bump Build Version
+        run: |
+          cd ios/App/App
+          NEW_BUILD_NUMBER=$((${{ github.run_number }} + 88))
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $NEW_BUILD_NUMBER" Info.plist
+          echo "✅ Build version updated to: $NEW_BUILD_NUMBER"
+
+      # ========================================
+      # 5️⃣ CERTIFICATS
+      # ========================================
+      - name: 🔐 Import certificate & profile
+        env:
+          P12_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+        run: |
+          security create-keychain -p actions ios.keychain
+          security default-keychain -s ios.keychain
+          security unlock-keychain -p actions ios.keychain
+          security set-keychain-settings -t 3600 -u ios.keychain
+          
+          echo "${{ secrets.IOS_CERTIFICATE_P12 }}" | base64 --decode > /tmp/cert.p12
+          if [ -z "$P12_PASSWORD" ]; then
+            security import /tmp/cert.p12 -k ios.keychain -T /usr/bin/codesign -P ""
+          else
+            security import /tmp/cert.p12 -k ios.keychain -T /usr/bin/codesign -P "$P12_PASSWORD"
+          fi
+          security set-key-partition-list -S apple-tool:,apple: -s -k actions ios.keychain
+          rm -f /tmp/cert.p12
+          
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          echo "${{ secrets.IOS_PROVISIONING_PROFILE }}" | base64 --decode > /tmp/profile.mobileprovision
+          PROFILE_UUID=$(/usr/libexec/PlistBuddy -c "Print :UUID" /dev/stdin <<< $(security cms -D -i /tmp/profile.mobileprovision))
+          cp /tmp/profile.mobileprovision ~/Library/MobileDevice/Provisioning\ Profiles/${PROFILE_UUID}.mobileprovision
+          echo "PROFILE_UUID=${PROFILE_UUID}" >> $GITHUB_ENV
+          rm -f /tmp/profile.mobileprovision
+
+      - name: 🔧 Fix build settings & Add Firebase Config
+        run: |
+          cd ios/App
+          ruby << 'RUBY'
+          require 'xcodeproj'
+          
+          project_path = 'App.xcodeproj'
+          project = Xcodeproj::Project.open(project_path)
+          app_target = project.targets.find { |t| t.name == 'App' }
+          
+          # 1. S'assurer que GoogleService-Info.plist est dans le projet et la cible
+          file_name = 'GoogleService-Info.plist'
+          file_path = "App/#{file_name}"
+          
+          # Vérifier si le fichier est déjà dans le projet, sinon l'ajouter
+          file_ref = project.main_group['App'].files.find { |f| f.path == file_name }
+          if file_ref.nil?
+            file_ref = project.main_group['App'].new_file(file_name)
+            puts "➕ Added #{file_name} to project"
+          end
+          
+          # L'ajouter aux ressources de la cible App (pour qu'il soit dans l'IPA)
+          unless app_target.resources_build_phase.files_references.include?(file_ref)
+            app_target.add_resources([file_ref])
+            puts "📦 Linked #{file_name} to App target membership"
+          end
+
+          # 2. Vos autres correctifs de signature
+          app_target.build_configurations.each do |config|
+            config.build_settings['CODE_SIGN_STYLE'] = 'Manual'
+            config.build_settings['CODE_SIGN_ENTITLEMENTS'] = 'App/App.entitlements'
+          end
+          
+          # 3. Fix Pod targets
+          if File.exist?('Pods/Pods.xcodeproj')
+            pods_project = Xcodeproj::Project.open('Pods/Pods.xcodeproj')
+            pods_project.targets.each do |target|
+              target.build_configurations.each do |config|
+                config.build_settings['CODE_SIGNING_ALLOWED'] = 'NO'
+                if config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'].to_f < 14.0
+                  config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '14.0'
+                end
+              end
+            end
+            pods_project.save
+          end
+          
+          project.save
+          puts "✅ Xcode project updated successfully"
+          RUBY
+
+      # ========================================
+      # 7️⃣ BUILD & EXPORT
+      # ========================================
+      - name: 🔨 Build archive & export IPA
+        run: |
+          cd ios/App
+          
+          xcodebuild archive \
+            -workspace App.xcworkspace \
+            -scheme App \
+            -configuration Release \
+            -sdk iphoneos \
+            -archivePath build/App.xcarchive \
+            CODE_SIGN_STYLE=Manual \
+            DEVELOPMENT_TEAM="${{ secrets.IOS_TEAM_ID }}" \
+            CODE_SIGN_IDENTITY="Apple Distribution" \
+            PROVISIONING_PROFILE_SPECIFIER="${{ env.PROFILE_UUID }}" \
+            PROVISIONING_PROFILE="${{ env.PROFILE_UUID }}" \
+            CODE_SIGN_ENTITLEMENTS="App/App.entitlements" \
+            IPHONEOS_DEPLOYMENT_TARGET=14.0
+          
+          cat > exportOptions.plist << EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key>
+            <string>app-store</string>
+            <key>signingStyle</key>
+            <string>manual</string>
+            <key>teamID</key>
+            <string>${{ secrets.IOS_TEAM_ID }}</string>
+            <key>provisioningProfiles</key>
+            <dict>
+              <key>${{ secrets.IOS_BUNDLE_ID }}</key>
+              <string>${{ env.PROFILE_UUID }}</string>
+            </dict>
+            <key>stripSwiftSymbols</key>
+            <true/>
+            <key>thinning</key>
+            <string>&lt;none&gt;</string>
+          </dict>
+          </plist>
+          EOF
+          
+          xcodebuild -exportArchive \
+            -archivePath build/App.xcarchive \
+            -exportPath build \
+            -exportOptionsPlist exportOptions.plist \
+            -allowProvisioningUpdates
+
+      # ========================================
+      # 8️⃣ UPLOAD
+      # ========================================
+      - name: 🚀 Upload to TestFlight
+        uses: apple-actions/upload-testflight-build@v1
+        with:
+          app-path: ios/App/build/App.ipa
+          issuer-id: ${{ secrets.APPSTORE_ISSUER_ID }}
+          api-key-id: ${{ secrets.APPSTORE_API_KEY_ID }}
+          api-private-key: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
+
+      - name: 💾 Save artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ios-app-${{ github.run_number }}
+          path: ios/App/build/App.ipa
+          retention-days: 30
+          

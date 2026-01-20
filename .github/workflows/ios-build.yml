@@ -284,52 +284,15 @@ jobs:
             -allowProvisioningUpdates
 
       # ========================================
-      # 8️⃣ UPLOAD WITH ALTOOL - FIXED SYNTAX
+      # 8️⃣ UPLOAD - CORRIGÉ
       # ========================================
-      - name: 🚀 Upload to TestFlight with altool
-        run: |
-          cd app/ios/App/build
-
-          # Create private_keys directory
-          mkdir -p ~/.appstoreconnect/private_keys
-
-          # Write the API key with proper naming (without .p8 extension)
-          KEY_ID="${{ secrets.APPSTORE_API_KEY_ID }}"
-          echo "${{ secrets.APPSTORE_API_PRIVATE_KEY }}" > ~/.appstoreconnect/private_keys/AuthKey_${KEY_ID}.p8
-
-          echo "🔐 Uploading IPA with xcrun altool..."
-          echo "Key location: ~/.appstoreconnect/private_keys/AuthKey_${KEY_ID}.p8"
-
-          # Verify key file was created
-          if [ ! -f ~/.appstoreconnect/private_keys/AuthKey_${KEY_ID}.p8 ]; then
-            echo "❌ ERROR: Key file not created!"
-            exit 1
-          fi
-
-          # Upload using altool with correct syntax
-          xcrun altool --output-format json \
-            --upload-app \
-            --file App.ipa \
-            --type ios \
-            --apiKeyId "${KEY_ID}" \
-            --apiIssuer "${{ secrets.APPSTORE_ISSUER_ID }}" \
-            2>&1 | tee upload.log
-
-          # Clean up
-          rm -f ~/.appstoreconnect/private_keys/AuthKey_${KEY_ID}.p8
-
-          # Check if successful
-          echo ""
-          echo "Upload response:"
-          cat upload.log
-          echo ""
-
-          if grep -q '"success":true' upload.log 2>/dev/null || grep -q 'RequestUUID' upload.log 2>/dev/null; then
-            echo "✅ Upload successful!"
-          elif grep -q 'product-errors' upload.log 2>/dev/null; then
-            echo "⚠️ Upload encountered errors. Check logs above."
-            exit 1
-          fi
+      - name: 🚀 Upload to TestFlight
+        uses: apple-actions/upload-testflight-build@v1
+        with:
+          app-path: app/ios/App/build/App.ipa
+          issuer-id: ${{ secrets.APPSTORE_ISSUER_ID }}
+          api-key-id: ${{ secrets.APPSTORE_API_KEY_ID }}
+          api-private-key: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
 
       - name: 💾 Save artifact
         uses: actions/upload-artifact@v4

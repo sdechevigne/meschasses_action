@@ -96,46 +96,19 @@ jobs:
         run: chmod +x app/android/gradlew
 
       # ========================================
-      # 4️⃣ CONFIGURE KEYSTORE & SIGNING - INCHANGÉ
+      # 4️⃣ CONFIGURE KEYSTORE & SIGNING - CORRIGÉ
       # ========================================
       - name: 🔑 Create Keystore from Secret
-        env:
-          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
         run: |
-          cd app/android
-          mkdir -p app
-
-          echo "${{ secrets.ANDROID_KEYSTORE_FILE }}" | base64 --decode > app/release.keystore
-
-          # ✅ Config gradle.properties
-          cat >> gradle.properties << EOF
-          # AndroidX
-          android.useAndroidX=true
-          android.enableJetifier=true
-
-          # Keystore
-          KEYSTORE_FILE=app/release.keystore
-          KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD
-          KEY_ALIAS=$KEY_ALIAS
-          KEY_PASSWORD=$KEY_PASSWORD
-          EOF
-
-          echo "✅ Keystore configuré"
-
-      - name: 🔍 Verify Keystore
-        run: |
-          cd app/android
-          if [ -f app/release.keystore ]; then
-            keytool -list -v \
-              -keystore app/release.keystore \
-              -storepass "${{ secrets.ANDROID_KEYSTORE_PASSWORD }}" | head -20
-            echo "✅ Keystore vérifié"
-          else
-            echo "❌ Keystore file not found!"
-            exit 1
-          fi
+          echo "📂 Creating keystore at expected location..."
+          mkdir -p app/android/app
+      
+          echo "${{ secrets.ANDROID_KEYSTORE_FILE }}" | base64 --decode > app/android/app/keystore
+      
+          chmod 600 app/android/app/keystore
+      
+          echo "✅ Keystore created:"
+          ls -l app/android/app/keystore
 
       # ========================================
       # 5️⃣ CONFIGURE GRADLE BUILD - INCHANGÉ
@@ -184,6 +157,7 @@ jobs:
       # ========================================
       # 7️⃣ BUILD ANDROID APP - INCHANGÉ
       # ========================================
+      
       - name: 🔨 Build Release Bundle (AAB)
         env:
           KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -191,23 +165,16 @@ jobs:
           KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
         run: |
           cd app/android
-
+      
           ./gradlew bundleRelease \
-            -DKEYSTORE_FILE=app/release.keystore \
-            -DKEYSTORE_PASSWORD="$KEYSTORE_PASSWORD" \
-            -DKEY_ALIAS="$KEY_ALIAS" \
-            -DKEY_PASSWORD="$KEY_PASSWORD" \
-            -PsignedBuildType=release \
+            -PKEYSTORE_PASSWORD="$KEYSTORE_PASSWORD" \
+            -PKEY_ALIAS="$KEY_ALIAS" \
+            -PKEY_PASSWORD="$KEY_PASSWORD" \
             --stacktrace \
             2>&1 | tee build.log
-
-          if grep -q "BUILD SUCCESSFUL" build.log; then
-            echo "✅ AAB build successful"
-          else
-            echo "❌ Build failed"
-            exit 1
-          fi
-
+      
+          grep -q "BUILD SUCCESSFUL" build.log
+      
       - name: 🔐 Build & Sign APK
         env:
           KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -215,13 +182,11 @@ jobs:
           KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
         run: |
           cd app/android
-
+      
           ./gradlew assembleRelease \
-            -DKEYSTORE_FILE=app/release.keystore \
-            -DKEYSTORE_PASSWORD="$KEYSTORE_PASSWORD" \
-            -DKEY_ALIAS="$KEY_ALIAS" \
-            -DKEY_PASSWORD="$KEY_PASSWORD" \
-            -PsignedBuildType=release \
+            -PKEYSTORE_PASSWORD="$KEYSTORE_PASSWORD" \
+            -PKEY_ALIAS="$KEY_ALIAS" \
+            -PKEY_PASSWORD="$KEY_PASSWORD" \
             --stacktrace
 
       # ========================================
@@ -267,3 +232,4 @@ jobs:
         run: |
           echo "🔴 Build failed - run preserved for investigation"
           echo "📋 Logs: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+

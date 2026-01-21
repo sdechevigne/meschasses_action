@@ -11,16 +11,16 @@ jobs:
 
     steps:
       # ========================================
-      # 1️⃣ CHECKOUT - MODIFIÉ
+      # 1️⃣ CHECKOUT
       # ========================================
-      - name: 📥 Checkout React code from meschasse_mobile
+      - name: 📥 Checkout code
         uses: actions/checkout@v4
         with:
           repository: sdechevigne/meschasse_mobile
           token: ${{ secrets.CI_PAT_TOKEN }}
           path: app
 
-      - name: 📥 Checkout native Android from meschasses_natives
+      - name: 📥 Checkout native
         uses: actions/checkout@v4
         with:
           repository: sdechevigne/meschasses_natives
@@ -30,28 +30,20 @@ jobs:
             android
             whatsnew
 
-      - name: 📂 Copy Android platform to app
+      - name: 📂 Copy platform
         run: |
-          echo "📋 Copying android/ from native repo..."
           cp -r native/android app/
-          echo "📋 Copying whatsnew/ if exists..."
-          if [ -d native/whatsnew ]; then
-            cp -r native/whatsnew app/
-          else
-            echo "⚠️ whatsnew/ directory not found, skipping"
-          fi
-          echo "✅ Native platform copied"
-          ls -la app/
+          [ -d native/whatsnew ] && cp -r native/whatsnew app/ || true
 
       # ========================================
-      # 2️⃣ SETUP - INCHANGÉ
+      # 2️⃣ SETUP
       # ========================================
-      - name: 📦 Setup Node.js 20
+      - name: 📦 Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      - name: ☕ Setup Java (JDK 21 pour Capacitor 7)
+      - name: ☕ Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
@@ -70,129 +62,70 @@ jobs:
           cache-read-only: false
 
       # ========================================
-      # 3️⃣ BUILD WEB & CONFIG - INCHANGÉ
+      # 3️⃣ BUILD WEB
       # ========================================
       - name: 📚 Install dependencies
-        run: |
-          cd app
-          rm -rf node_modules package-lock.json
-          npm install
+        run: cd app && npm install
 
-      - name: 🏗️ Build web app
-        run: |
-          cd app
-          npm run build
+      - name: 🏗️ Build web
+        run: cd app && npm run build
         env:
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
           VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
           VITE_POSTHOG_KEY: ${{ secrets.VITE_POSTHOG_KEY }}
 
-      - name: 📱 Sync Capacitor Android
-        run: |
-          cd app
-          npx cap sync android
+      - name: 📱 Sync Capacitor
+        run: cd app && npx cap sync android
 
-      - name: 🔐 Fix gradlew permissions
+      - name: 🔐 Fix permissions
         run: chmod +x app/android/gradlew
 
       # ========================================
-      # 4️⃣ CONFIGURE KEYSTORE & SIGNING - CORRIGÉ
+      # 4️⃣ KEYSTORE
       # ========================================
-      - name: 🔑 Create Keystore from Secret
+      - name: 🔑 Setup Keystore
         run: |
-          echo "📂 Creating keystore at expected location..."
           mkdir -p app/android/app
-      
           echo "${{ secrets.ANDROID_KEYSTORE_FILE }}" | base64 --decode > app/android/app/keystore
-      
           chmod 600 app/android/app/keystore
-      
-          echo "✅ Keystore created:"
-          ls -l app/android/app/keystore
-      
+
       # ========================================
-      # 5️⃣ CONFIGURE GRADLE BUILD - MODIFIÉ
+      # 5️⃣ CONFIGURE
       # ========================================
-      - name: 🔧 Configure local.properties
+      - name: 🔧 Configure Gradle
         run: |
           cd app/android
           cat > local.properties << EOF
           sdk.dir=${ANDROID_SDK_ROOT}
           ndk.dir=${ANDROID_NDK_ROOT}
           EOF
-          echo "✅ local.properties configuré"
-      
-      - name: 🔢 Verify Version Configuration
-        run: |
-          cd app
-          VERSION=$(grep '"version"' package.json | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
-          BUILD_NUMBER="${{ github.run_number }}"
-          
-          MAJOR=$(echo $VERSION | cut -d. -f1)
-          MINOR=$(echo $VERSION | cut -d. -f2)
-          PATCH=$(echo $VERSION | cut -d. -f3)
-          
-          VERSION_CODE=$((MAJOR * 1000000 + MINOR * 1000 + PATCH * 10 + BUILD_NUMBER))
-          VERSION_NAME="$VERSION-build.$BUILD_NUMBER"
-          
-          echo "📱 Version calculée (automatique via build.gradle):"
-          echo "  • package.json version: $VERSION"
-          echo "  • Build number: $BUILD_NUMBER"
-          echo "  • versionCode: $VERSION_CODE"
-          echo "  • versionName: $VERSION_NAME"
-          
-      # ========================================
-      # 6️⃣ SETUP FIREBASE - INCHANGÉ
-      # ========================================
-      - name: 🔥 Setup Firebase Config
+
+      - name: 🔥 Setup Firebase
         run: |
           cd app/android
-          if [ -z "${{ secrets.ANDROID_GOOGLE_SERVICES_JSON }}" ]; then
-            echo "⚠️ Google Services JSON secret not found"
-          else
-            echo "${{ secrets.ANDROID_GOOGLE_SERVICES_JSON }}" | base64 --decode > app/google-services.json
-            echo "✅ google-services.json configuré"
-          fi
+          echo "${{ secrets.ANDROID_GOOGLE_SERVICES_JSON }}" | base64 --decode > app/google-services.json 2>/dev/null || true
 
       # ========================================
-      # 7️⃣ BUILD ANDROID APP - INCHANGÉ
+      # 6️⃣ BUILD
       # ========================================
-      
-      - name: 🔨 Build Release Bundle (AAB)
+      - name: 🔨 Build Release
         env:
           KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
           KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          GITHUB_RUN_NUMBER: ${{ github.run_number }}
         run: |
           cd app/android
-      
           ./gradlew bundleRelease \
             -PKEYSTORE_PASSWORD="$KEYSTORE_PASSWORD" \
             -PKEY_ALIAS="$KEY_ALIAS" \
             -PKEY_PASSWORD="$KEY_PASSWORD" \
-            --stacktrace \
-            2>&1 | tee build.log
-      
-          grep -q "BUILD SUCCESSFUL" build.log
-      
-      - name: 🔐 Build & Sign APK
-        env:
-          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-        run: |
-          cd app/android
-      
-          ./gradlew assembleRelease \
-            -PKEYSTORE_PASSWORD="$KEYSTORE_PASSWORD" \
-            -PKEY_ALIAS="$KEY_ALIAS" \
-            -PKEY_PASSWORD="$KEY_PASSWORD" \
-            --stacktrace
+            --stacktrace --quiet
 
       # ========================================
-      # 8️⃣ PUBLISH TO GOOGLE PLAY STORE - INCHANGÉ
+      # 7️⃣ PUBLISH
       # ========================================
-      - name: 🚀 Upload to Google Play Draft
+      - name: 🚀 Upload to Play Store
         uses: r0adkll/upload-google-play@v1
         with:
           serviceAccountJsonPlainText: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
@@ -204,33 +137,12 @@ jobs:
           whatsNewDirectory: app/whatsnew
 
       # ========================================
-      # 9️⃣ CLEANUP & NOTIFICATION - ZERO TRACE
+      # 8️⃣ NOTIFICATION
       # ========================================
-      - name: 📱 GitHub Notification - SUCCESS
+      - name: ✅ Success
         if: success()
-        run: |
-          BUILD_NUMBER="${{ github.run_number }}"
-          BUILD_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          
-          echo "🎉 Android Build #$BUILD_NUMBER uploaded to Google Play Store"
-          echo "📦 Status: Draft (internal track)"
-          echo "🔗 Workflow: $BUILD_URL"
+        run: exit 0
 
-      - name: 🗑️ DELETE RUN - No Trace Left
-        if: success()
-        run: |
-          echo "🗑️ Deleting this run to leave no trace..."
-          sleep 5
-          gh run delete ${{ github.run_id }} --repo ${{ github.repository }}
-          echo "✅ Run deleted - zero public history"
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-
-      - name: 🔴 KEEP RUN for debugging - FAILED
+      - name: ❌ Failed
         if: failure()
-        run: |
-          echo "🔴 Build failed - run preserved for investigation"
-          echo "📋 Logs: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-
-
+        run: exit 1

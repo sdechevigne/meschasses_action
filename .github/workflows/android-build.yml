@@ -109,9 +109,9 @@ jobs:
       
           echo "✅ Keystore created:"
           ls -l app/android/app/keystore
-
+      
       # ========================================
-      # 5️⃣ CONFIGURE GRADLE BUILD - INCHANGÉ
+      # 5️⃣ CONFIGURE GRADLE BUILD - MODIFIÉ
       # ========================================
       - name: 🔧 Configure local.properties
         run: |
@@ -121,26 +121,26 @@ jobs:
           ndk.dir=${ANDROID_NDK_ROOT}
           EOF
           echo "✅ local.properties configuré"
-
-      - name: 🔢 Update App Version
+      
+      - name: 🔢 Verify Version Configuration
         run: |
-          cd app/android/app
-          VERSION=$(grep '"version"' ../../package.json | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
+          cd app
+          VERSION=$(grep '"version"' package.json | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
           BUILD_NUMBER="${{ github.run_number }}"
+          
           MAJOR=$(echo $VERSION | cut -d. -f1)
           MINOR=$(echo $VERSION | cut -d. -f2)
           PATCH=$(echo $VERSION | cut -d. -f3)
+          
           VERSION_CODE=$((MAJOR * 1000000 + MINOR * 1000 + PATCH * 10 + BUILD_NUMBER))
           VERSION_NAME="$VERSION-build.$BUILD_NUMBER"
-
-          if [ -f build.gradle ]; then
-            sed -i "s/versionCode [0-9]*/versionCode $VERSION_CODE/" build.gradle
-            sed -i "s/versionName \"[^\"]*\"/versionName \"$VERSION_NAME\"/" build.gradle
-            echo "✅ build.gradle mis à jour"
-          fi
-
-          echo "✅ Version: $VERSION_CODE / $VERSION_NAME"
-
+          
+          echo "📱 Version calculée (automatique via build.gradle):"
+          echo "  • package.json version: $VERSION"
+          echo "  • Build number: $BUILD_NUMBER"
+          echo "  • versionCode: $VERSION_CODE"
+          echo "  • versionName: $VERSION_NAME"
+          
       # ========================================
       # 6️⃣ SETUP FIREBASE - INCHANGÉ
       # ========================================
@@ -232,4 +232,5 @@ jobs:
         run: |
           echo "🔴 Build failed - run preserved for investigation"
           echo "📋 Logs: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
 

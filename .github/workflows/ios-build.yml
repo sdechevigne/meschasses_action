@@ -8,39 +8,20 @@ jobs:
     name: Build iOS App
     runs-on: macos-15
     timeout-minutes: 60
-
     environment: production
-    if: |
-      github.event_name == 'workflow_dispatch' &&
-      (github.actor == 'sdechevigne' || github.actor_id == 'TON_USER_ID') &&
-      github.ref == 'refs/heads/main'
 
     steps:
       # ========================================
-      # 🔐 SECURITY CHECK
-      # ========================================
-      - name: 🔐 Security Check
-        run: |
-          echo "🔍 Workflow triggered by: ${{ github.actor }}"
-          echo "🔍 Event: ${{ github.event_name }}"
-          echo "🔍 Ref: ${{ github.ref }}"
-          
-          if [ "${{ github.actor }}" != "sdechevigne" ]; then
-            echo "❌ Unauthorized actor"
-            exit 1
-          fi
-
-      # ========================================
       # 1️⃣ CHECKOUT
       # ========================================
-      - name: 📥 Checkout React code from meschasse_mobile
+      - name: 📥 Checkout code
         uses: actions/checkout@v4
         with:
           repository: sdechevigne/meschasse_mobile
           token: ${{ secrets.CI_PAT_TOKEN }}
           path: app
 
-      - name: 📥 Checkout native iOS from meschasses_natives
+      - name: 📥 Checkout native
         uses: actions/checkout@v4
         with:
           repository: sdechevigne/meschasses_natives
@@ -50,32 +31,25 @@ jobs:
             ios
             whatsnew
 
-      - name: 📂 Copy iOS from native repo
+      - name: 📂 Copy platform
         run: |
           cd app
           rm -rf ios
           cp -r ../native-temp/ios .
-          if [ -d ../native-temp/whatsnew ]; then
-            cp -r ../native-temp/whatsnew .
-          fi
-          echo "✅ iOS copied"
+          [ -d ../native-temp/whatsnew ] && cp -r ../native-temp/whatsnew . || true
 
       # ========================================
-      # 2️⃣ SETUP & BUILD
+      # 2️⃣ SETUP & BUILD WEB
       # ========================================
       - name: 📦 Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      - name: 🔧 Install dependencies
+      - name: 📚 Install & Build
         run: |
           cd app
           npm install
-
-      - name: 🏗️ Build web app
-        run: |
-          cd app
           npm run build
         env:
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
@@ -83,26 +57,7 @@ jobs:
           VITE_POSTHOG_KEY: ${{ secrets.VITE_POSTHOG_KEY }}
 
       - name: 📱 Sync Capacitor
-        run: |
-          cd app
-          npx cap sync ios
-
-      - name: 🔥 Verify Firebase in Podfile
-        run: |
-          cd app/ios/App
-          echo "🔍 Checking Firebase pods in Podfile..."
-          
-          if ! grep -q "CapacitorFirebaseApp" Podfile; then
-            echo "❌ ERROR: Firebase pods missing from Podfile!"
-            exit 1
-          fi
-          
-          if [ ! -f App/GoogleService-Info.plist ]; then
-            echo "❌ ERROR: GoogleService-Info.plist not found!"
-            exit 1
-          fi
-          
-          echo "✅ Firebase configuration verified"
+        run: cd app && npx cap sync ios
 
       # ========================================
       # 3️⃣ COCOAPODS
@@ -114,41 +69,21 @@ jobs:
           rm -rf Pods Podfile.lock
           pod install --repo-update
 
-      - name: 🔐 Verify Privacy Manifests
-        run: |
-          cd app/ios/App
-          echo "🔍 Checking for Privacy Manifests..."
-          
-          MANIFESTS=$(find Pods -name "PrivacyInfo.xcprivacy" | grep -E "(Firebase|Google|GTM)" || true)
-          
-          if [ -z "$MANIFESTS" ]; then
-            echo "⚠️ WARNING: No Privacy Manifests found for Firebase/Google SDKs"
-          else
-            echo "✅ Privacy Manifests found"
-          fi
-
       # ========================================
-      # 4️⃣ AUTO-VERSION - NOUVEAU
+      # 4️⃣ VERSION
       # ========================================
-      - name: 🔢 Auto-Version from package.json
+      - name: 🔢 Configure Version
         run: |
           cd app
-          
           VERSION=$(grep '"version"' package.json | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
           BUILD_NUMBER=$((${{ github.run_number }} + 88))
-          
-          echo "📱 iOS Version Configuration:"
-          echo "  • Marketing Version (CFBundleShortVersionString): $VERSION"
-          echo "  • Build Number (CFBundleVersion): $BUILD_NUMBER"
-          
-          # Exporter pour les étapes suivantes
           echo "IOS_VERSION=$VERSION" >> $GITHUB_ENV
           echo "IOS_BUILD_NUMBER=$BUILD_NUMBER" >> $GITHUB_ENV
 
       # ========================================
       # 5️⃣ CERTIFICATS
       # ========================================
-      - name: 🔐 Import certificate & profile
+      - name: 🔐 Import certificates
         env:
           P12_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
         run: |
@@ -156,96 +91,63 @@ jobs:
           security default-keychain -s ios.keychain
           security unlock-keychain -p actions ios.keychain
           security set-keychain-settings -t 3600 -u ios.keychain
-
+          
           echo "${{ secrets.IOS_CERTIFICATE_P12 }}" | base64 --decode > /tmp/cert.p12
-
-          if [ -z "$P12_PASSWORD" ]; then
-            security import /tmp/cert.p12 -k ios.keychain -T /usr/bin/codesign -P ""
-          else
-            security import /tmp/cert.p12 -k ios.keychain -T /usr/bin/codesign -P "$P12_PASSWORD"
-          fi
-
+          security import /tmp/cert.p12 -k ios.keychain -T /usr/bin/codesign -P "${P12_PASSWORD:-}"
           security set-key-partition-list -S apple-tool:,apple: -s -k actions ios.keychain
           rm -f /tmp/cert.p12
-
+          
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
           echo "${{ secrets.IOS_PROVISIONING_PROFILE }}" | base64 --decode > /tmp/profile.mobileprovision
-
           PROFILE_UUID=$(/usr/libexec/PlistBuddy -c "Print :UUID" /dev/stdin <<< $(security cms -D -i /tmp/profile.mobileprovision))
           cp /tmp/profile.mobileprovision ~/Library/MobileDevice/Provisioning\ Profiles/${PROFILE_UUID}.mobileprovision
-
           echo "PROFILE_UUID=${PROFILE_UUID}" >> $GITHUB_ENV
           rm -f /tmp/profile.mobileprovision
 
       # ========================================
-      # 6️⃣ CONFIGURE XCODE PROJECT - MODIFIÉ
+      # 6️⃣ CONFIGURE XCODE
       # ========================================
-      - name: 🔧 Configure Xcode Project with Auto-Version
+      - name: 🔧 Configure Xcode
         run: |
           cd app/ios/App
-          
           ruby << 'RUBY'
           require 'xcodeproj'
-
-          project_path = 'App.xcodeproj'
-          project = Xcodeproj::Project.open(project_path)
+          project = Xcodeproj::Project.open('App.xcodeproj')
           app_target = project.targets.find { |t| t.name == 'App' }
-
-          # ✅ VERSION AUTOMATIQUE depuis package.json
-          marketing_version = ENV['IOS_VERSION']
-          build_number = ENV['IOS_BUILD_NUMBER']
-
+          
           app_target.build_configurations.each do |config|
-            # Version Marketing (ex: "1.11.2")
-            config.build_settings['MARKETING_VERSION'] = marketing_version
-            
-            # Build Number (ex: "118")
-            config.build_settings['CURRENT_PROJECT_VERSION'] = build_number
-            
-            # Signature manuelle
+            config.build_settings['MARKETING_VERSION'] = ENV['IOS_VERSION']
+            config.build_settings['CURRENT_PROJECT_VERSION'] = ENV['IOS_BUILD_NUMBER']
             config.build_settings['CODE_SIGN_STYLE'] = 'Manual'
             config.build_settings['CODE_SIGN_ENTITLEMENTS'] = 'App/App.entitlements'
           end
-
-          # ✅ GoogleService-Info.plist
-          file_name = 'GoogleService-Info.plist'
-          file_ref = project.main_group['App'].files.find { |f| f.path == file_name }
-
+          
+          file_ref = project.main_group['App'].files.find { |f| f.path == 'GoogleService-Info.plist' }
           if file_ref.nil?
-            file_ref = project.main_group['App'].new_file(file_name)
-            puts "➕ Added #{file_name} to project"
+            file_ref = project.main_group['App'].new_file('GoogleService-Info.plist')
           end
-
-          unless app_target.resources_build_phase.files_references.include?(file_ref)
-            app_target.add_resources([file_ref])
-            puts "📦 Linked #{file_name} to App target"
-          end
-
-          # ✅ Fix Pod targets
+          app_target.add_resources([file_ref]) unless app_target.resources_build_phase.files_references.include?(file_ref)
+          
           if File.exist?('Pods/Pods.xcodeproj')
             pods_project = Xcodeproj::Project.open('Pods/Pods.xcodeproj')
             pods_project.targets.each do |target|
               target.build_configurations.each do |config|
                 config.build_settings['CODE_SIGNING_ALLOWED'] = 'NO'
-                if config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'].to_f < 14.0
-                  config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '14.0'
-                end
+                config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '14.0' if config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'].to_f < 14.0
               end
             end
             pods_project.save
           end
-
+          
           project.save
-          puts "✅ Xcode configured: #{marketing_version} (#{build_number})"
           RUBY
 
       # ========================================
       # 7️⃣ BUILD & EXPORT
       # ========================================
-      - name: 🔨 Build archive & export IPA
+      - name: 🔨 Build & Export
         run: |
           cd app/ios/App
-
           xcodebuild archive \
             -workspace App.xcworkspace \
             -scheme App \
@@ -258,37 +160,31 @@ jobs:
             PROVISIONING_PROFILE_SPECIFIER="${{ env.PROFILE_UUID }}" \
             PROVISIONING_PROFILE="${{ env.PROFILE_UUID }}" \
             CODE_SIGN_ENTITLEMENTS="App/App.entitlements" \
-            IPHONEOS_DEPLOYMENT_TARGET=14.0
-
+            IPHONEOS_DEPLOYMENT_TARGET=14.0 \
+            -quiet
+          
           cat > exportOptions.plist << EOF
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
           <dict>
-            <key>method</key>
-            <string>app-store</string>
-            <key>signingStyle</key>
-            <string>manual</string>
-            <key>teamID</key>
-            <string>${{ secrets.IOS_TEAM_ID }}</string>
+            <key>method</key><string>app-store</string>
+            <key>signingStyle</key><string>manual</string>
+            <key>teamID</key><string>${{ secrets.IOS_TEAM_ID }}</string>
             <key>provisioningProfiles</key>
             <dict>
               <key>${{ secrets.IOS_BUNDLE_ID }}</key>
               <string>${{ env.PROFILE_UUID }}</string>
             </dict>
-            <key>stripSwiftSymbols</key>
-            <true/>
-            <key>thinning</key>
-            <string>&lt;none&gt;</string>
           </dict>
           </plist>
           EOF
-
+          
           xcodebuild -exportArchive \
             -archivePath build/App.xcarchive \
             -exportPath build \
             -exportOptionsPlist exportOptions.plist \
-            -allowProvisioningUpdates
+            -quiet
 
       # ========================================
       # 8️⃣ UPLOAD
@@ -301,35 +197,13 @@ jobs:
           api-key-id: ${{ secrets.APPSTORE_API_KEY_ID }}
           api-private-key: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
 
-      - name: 💾 Save artifact
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: ios-app-${{ github.run_number }}
-          path: app/ios/App/build/App.ipa
-          retention-days: 30
-
       # ========================================
       # 9️⃣ NOTIFICATION
       # ========================================
-      - name: 📱 GitHub Notification - SUCCESS
+      - name: ✅ Success
         if: success()
-        run: |
-          echo "🎉 iOS Build uploaded to TestFlight"
-          echo "📱 Version: ${{ env.IOS_VERSION }} (${{ env.IOS_BUILD_NUMBER }})"
-          echo "🔗 Workflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+        run: exit 0
 
-      - name: 🗑️ DELETE RUN - No Trace Left
-        if: success()
-        run: |
-          echo "🗑️ Deleting this run..."
-          sleep 5
-          gh run delete ${{ github.run_id }} --repo ${{ github.repository }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-
-      - name: 🔴 KEEP RUN for debugging - FAILED
+      - name: ❌ Failed
         if: failure()
-        run: |
-          echo "🔴 Build failed - run preserved"
-          echo "📋 Logs: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+        run: exit 1

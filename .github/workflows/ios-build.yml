@@ -9,29 +9,29 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 60
 
-    # 🔒 SÉCURITÉ: Protection multi-niveaux
-    environment: production  # Require manual approval
+    environment: production
     if: |
       github.event_name == 'workflow_dispatch' &&
       (github.actor == 'sdechevigne' || github.actor_id == 'TON_USER_ID') &&
       github.ref == 'refs/heads/main'
 
     steps:
-
-      # ✅ Vérification supplémentaire au début
+      # ========================================
+      # 🔐 SECURITY CHECK
+      # ========================================
       - name: 🔐 Security Check
         run: |
           echo "🔍 Workflow triggered by: ${{ github.actor }}"
           echo "🔍 Event: ${{ github.event_name }}"
           echo "🔍 Ref: ${{ github.ref }}"
           
-          # Fail si conditions non remplies
           if [ "${{ github.actor }}" != "sdechevigne" ]; then
             echo "❌ Unauthorized actor"
             exit 1
           fi
+
       # ========================================
-      # 1️⃣ CHECKOUT - MODIFIÉ
+      # 1️⃣ CHECKOUT
       # ========================================
       - name: 📥 Checkout React code from meschasse_mobile
         uses: actions/checkout@v4
@@ -61,7 +61,7 @@ jobs:
           echo "✅ iOS copied"
 
       # ========================================
-      # 2️⃣ SETUP & BUILD - INCHANGÉ
+      # 2️⃣ SETUP & BUILD
       # ========================================
       - name: 📦 Setup Node.js
         uses: actions/setup-node@v4
@@ -94,10 +94,6 @@ jobs:
           
           if ! grep -q "CapacitorFirebaseApp" Podfile; then
             echo "❌ ERROR: Firebase pods missing from Podfile!"
-            echo "This might happen if cap sync overwrites the Podfile."
-            echo ""
-            echo "📋 Current Podfile content:"
-            cat Podfile
             exit 1
           fi
           
@@ -107,12 +103,9 @@ jobs:
           fi
           
           echo "✅ Firebase configuration verified"
-          echo " - CapacitorFirebaseApp: found in Podfile"
-          echo " - CapacitorFirebaseAuthentication: found in Podfile"
-          echo " - GoogleService-Info.plist: present"
 
       # ========================================
-      # 3️⃣ COCOAPODS - INCHANGÉ
+      # 3️⃣ COCOAPODS
       # ========================================
       - name: 💎 Install CocoaPods
         run: |
@@ -130,26 +123,30 @@ jobs:
           
           if [ -z "$MANIFESTS" ]; then
             echo "⚠️ WARNING: No Privacy Manifests found for Firebase/Google SDKs"
-            echo "This might cause Apple rejection!"
           else
-            echo "✅ Privacy Manifests found:"
-            echo "$MANIFESTS" | while read file; do
-              echo " - $(basename $(dirname $file))"
-            done
+            echo "✅ Privacy Manifests found"
           fi
 
       # ========================================
-      # 4️⃣ VERSION BUMP - INCHANGÉ
+      # 4️⃣ AUTO-VERSION - NOUVEAU
       # ========================================
-      - name: 🔢 Bump Build Version
+      - name: 🔢 Auto-Version from package.json
         run: |
-          cd app/ios/App/App
-          NEW_BUILD_NUMBER=$((${{ github.run_number }} + 88))
-          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $NEW_BUILD_NUMBER" Info.plist
-          echo "✅ Build version updated to: $NEW_BUILD_NUMBER"
+          cd app
+          
+          VERSION=$(grep '"version"' package.json | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
+          BUILD_NUMBER=$((${{ github.run_number }} + 88))
+          
+          echo "📱 iOS Version Configuration:"
+          echo "  • Marketing Version (CFBundleShortVersionString): $VERSION"
+          echo "  • Build Number (CFBundleVersion): $BUILD_NUMBER"
+          
+          # Exporter pour les étapes suivantes
+          echo "IOS_VERSION=$VERSION" >> $GITHUB_ENV
+          echo "IOS_BUILD_NUMBER=$BUILD_NUMBER" >> $GITHUB_ENV
 
       # ========================================
-      # 5️⃣ CERTIFICATS - INCHANGÉ
+      # 5️⃣ CERTIFICATS
       # ========================================
       - name: 🔐 Import certificate & profile
         env:
@@ -180,9 +177,13 @@ jobs:
           echo "PROFILE_UUID=${PROFILE_UUID}" >> $GITHUB_ENV
           rm -f /tmp/profile.mobileprovision
 
-      - name: 🔧 Fix build settings & Add Firebase Config
+      # ========================================
+      # 6️⃣ CONFIGURE XCODE PROJECT - MODIFIÉ
+      # ========================================
+      - name: 🔧 Configure Xcode Project with Auto-Version
         run: |
           cd app/ios/App
+          
           ruby << 'RUBY'
           require 'xcodeproj'
 
@@ -190,11 +191,24 @@ jobs:
           project = Xcodeproj::Project.open(project_path)
           app_target = project.targets.find { |t| t.name == 'App' }
 
-          # 1. S'assurer que GoogleService-Info.plist est dans le projet et la cible
-          file_name = 'GoogleService-Info.plist'
-          file_path = "App/#{file_name}"
+          # ✅ VERSION AUTOMATIQUE depuis package.json
+          marketing_version = ENV['IOS_VERSION']
+          build_number = ENV['IOS_BUILD_NUMBER']
 
-          # Vérifier si le fichier est déjà dans le projet, sinon l'ajouter
+          app_target.build_configurations.each do |config|
+            # Version Marketing (ex: "1.11.2")
+            config.build_settings['MARKETING_VERSION'] = marketing_version
+            
+            # Build Number (ex: "118")
+            config.build_settings['CURRENT_PROJECT_VERSION'] = build_number
+            
+            # Signature manuelle
+            config.build_settings['CODE_SIGN_STYLE'] = 'Manual'
+            config.build_settings['CODE_SIGN_ENTITLEMENTS'] = 'App/App.entitlements'
+          end
+
+          # ✅ GoogleService-Info.plist
+          file_name = 'GoogleService-Info.plist'
           file_ref = project.main_group['App'].files.find { |f| f.path == file_name }
 
           if file_ref.nil?
@@ -202,19 +216,12 @@ jobs:
             puts "➕ Added #{file_name} to project"
           end
 
-          # L'ajouter aux ressources de la cible App (pour qu'il soit dans l'IPA)
           unless app_target.resources_build_phase.files_references.include?(file_ref)
             app_target.add_resources([file_ref])
-            puts "📦 Linked #{file_name} to App target membership"
+            puts "📦 Linked #{file_name} to App target"
           end
 
-          # 2. Vos autres correctifs de signature
-          app_target.build_configurations.each do |config|
-            config.build_settings['CODE_SIGN_STYLE'] = 'Manual'
-            config.build_settings['CODE_SIGN_ENTITLEMENTS'] = 'App/App.entitlements'
-          end
-
-          # 3. Fix Pod targets
+          # ✅ Fix Pod targets
           if File.exist?('Pods/Pods.xcodeproj')
             pods_project = Xcodeproj::Project.open('Pods/Pods.xcodeproj')
             pods_project.targets.each do |target|
@@ -229,11 +236,11 @@ jobs:
           end
 
           project.save
-          puts "✅ Xcode project updated successfully"
+          puts "✅ Xcode configured: #{marketing_version} (#{build_number})"
           RUBY
 
       # ========================================
-      # 7️⃣ BUILD & EXPORT - INCHANGÉ
+      # 7️⃣ BUILD & EXPORT
       # ========================================
       - name: 🔨 Build archive & export IPA
         run: |
@@ -284,7 +291,7 @@ jobs:
             -allowProvisioningUpdates
 
       # ========================================
-      # 8️⃣ UPLOAD - CORRIGÉ
+      # 8️⃣ UPLOAD
       # ========================================
       - name: 🚀 Upload to TestFlight
         uses: apple-actions/upload-testflight-build@v1
@@ -303,32 +310,26 @@ jobs:
           retention-days: 30
 
       # ========================================
-      # 9️⃣ GITHUB NOTIFICATION + CLEANUP
+      # 9️⃣ NOTIFICATION
       # ========================================
       - name: 📱 GitHub Notification - SUCCESS
         if: success()
         run: |
-          BUILD_NUMBER="${{ github.run_number }}"
-          BUILD_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          
-          echo "🎉 iOS Build #$BUILD_NUMBER uploaded to TestFlight"
-          echo "📱 Check TestFlight for new build"
-          echo "🔗 Workflow: $BUILD_URL"
+          echo "🎉 iOS Build uploaded to TestFlight"
+          echo "📱 Version: ${{ env.IOS_VERSION }} (${{ env.IOS_BUILD_NUMBER }})"
+          echo "🔗 Workflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
       - name: 🗑️ DELETE RUN - No Trace Left
         if: success()
         run: |
-          echo "🗑️ Deleting this run to leave no trace..."
+          echo "🗑️ Deleting this run..."
           sleep 5
           gh run delete ${{ github.run_id }} --repo ${{ github.repository }}
-          echo "✅ Run deleted - zero public history"
         env:
           GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
 
       - name: 🔴 KEEP RUN for debugging - FAILED
         if: failure()
         run: |
-          echo "🔴 Build failed - run preserved for investigation"
+          echo "🔴 Build failed - run preserved"
           echo "📋 Logs: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-

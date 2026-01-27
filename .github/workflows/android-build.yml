@@ -133,7 +133,7 @@ jobs:
           releaseFiles: 'app/android/app/build/outputs/bundle/release/app-release.aab'
           track: internal
           inAppUpdatePriority: 5
-          status: draft
+          status: completed
           whatsNewDirectory: app/whatsnew
 
       # ========================================
@@ -146,3 +146,4 @@ jobs:
       - name: ❌ Failed
         if: failure()
         run: exit 1
+

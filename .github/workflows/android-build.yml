@@ -1,0 +1,159 @@
+name: 🤖 Build & Deploy Android
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-android:
+    name: Build Android App
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      # ========================================
+      # 1️⃣ CHECKOUT
+      # ========================================
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ secrets.MOBILE_REPO }}
+          token: ${{ secrets.CI_PAT_TOKEN }}
+          path: app
+
+      - name: 📥 Checkout native
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ secrets.NATIVES_REPO }}
+          token: ${{ secrets.CI_PAT_TOKEN }}
+          path: native
+          sparse-checkout: |
+            android
+            whatsnew
+
+      - name: 📂 Copy platform
+        run: |
+          cp -r native/android app/
+          [ -d native/whatsnew ] && cp -r native/whatsnew app/ || true
+
+      # ========================================
+      # 2️⃣ SETUP
+      # ========================================
+      - name: 📦 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: ☕ Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+          cache: gradle
+
+      - name: 🔧 Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          api-level: 35
+          ndk-version: '26.1.10909125'
+
+      - name: 💾 Cache Gradle
+        uses: gradle/gradle-build-action@v2
+        with:
+          cache-read-only: false
+
+      # ========================================
+      # 3️⃣ BUILD WEB
+      # ========================================
+      - name: 📚 Install dependencies
+        run: |
+          cd app
+          cat > ./env.ts << 'EOF'
+          export const ENV = {
+            SUPABASE_URL: '',
+            SUPABASE_ANON_KEY: '',
+            POSTHOG_KEY: '',
+          }
+          EOF
+          npm install
+
+      - name: 🏗️ Build web
+        run: cd app && npm run build
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_KEY }}
+          VITE_POSTHOG_KEY: ${{ secrets.VITE_POSTHOG_KEY }}
+
+      - name: 📱 Sync Capacitor
+        run: cd app && npx cap sync android
+
+      - name: 🔐 Fix permissions
+        run: chmod +x app/android/gradlew
+
+      # ========================================
+      # 4️⃣ KEYSTORE
+      # ========================================
+      - name: 🔑 Setup Keystore
+        run: |
+          mkdir -p app/android/app
+          echo "${{ secrets.ANDROID_KEYSTORE_FILE }}" | base64 --decode > app/android/app/keystore
+          chmod 600 app/android/app/keystore
+
+      # ========================================
+      # 5️⃣ CONFIGURE
+      # ========================================
+      - name: 🔧 Configure Gradle
+        run: |
+          cd app/android
+          cat > local.properties << EOF
+          sdk.dir=${ANDROID_SDK_ROOT}
+          ndk.dir=${ANDROID_NDK_ROOT}
+          EOF
+
+      - name: 🔥 Setup Firebase
+        run: |
+          cd app/android
+          echo "${{ secrets.ANDROID_GOOGLE_SERVICES_JSON }}" | base64 --decode > app/google-services.json 2>/dev/null || true
+
+      # ========================================
+      # 6️⃣ BUILD
+      # ========================================
+      - name: 🔨 Build Release
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          GITHUB_RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          cd app/android
+          ./gradlew bundleRelease \
+            -PKEYSTORE_PASSWORD="$KEYSTORE_PASSWORD" \
+            -PKEY_ALIAS="$KEY_ALIAS" \
+            -PKEY_PASSWORD="$KEY_PASSWORD" \
+            --stacktrace --quiet
+
+      # ========================================
+      # 7️⃣ PUBLISH
+      # ========================================
+      - name: 🚀 Upload to Play Store
+        uses: r0adkll/upload-google-play@v1
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
+          packageName: ${{ secrets.ANDROID_PACKAGE_NAME }}
+          releaseFiles: 'app/android/app/build/outputs/bundle/release/app-release.aab'
+          track: internal
+          inAppUpdatePriority: 5
+          status: completed
+          whatsNewDirectory: app/whatsnew
+
+      # ========================================
+      # 8️⃣ NOTIFICATION
+      # ========================================
+      - name: ✅ Success
+        if: success()
+        run: exit 0
+
+      - name: ❌ Failed
+        if: failure()
+        run: exit 1
+
+

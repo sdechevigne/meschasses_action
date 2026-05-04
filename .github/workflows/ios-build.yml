@@ -1,0 +1,232 @@
+name: 🍎 Build & Deploy iOS
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-ios:
+    name: Build iOS App
+    runs-on: macos-15
+    timeout-minutes: 60
+    environment: production
+
+    steps:
+      # ========================================
+      # 0️⃣ SELECT XCODE 26 (iOS 26 SDK required by App Store)
+      # ========================================
+      - name: 🛠️ Select Xcode 26
+        run: |
+          ls /Applications | grep -i "^Xcode" || true
+          XCODE_PATH=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+          if [ -z "$XCODE_PATH" ]; then
+            echo "::error::Xcode 26 not found on runner"
+            exit 1
+          fi
+          echo "Using $XCODE_PATH"
+          sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+
+      # ========================================
+      # 1️⃣ CHECKOUT
+      # ========================================
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ secrets.MOBILE_REPO }}
+          token: ${{ secrets.CI_PAT_TOKEN }}
+          path: app
+
+      - name: 📥 Checkout native
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ secrets.NATIVES_REPO }}
+          token: ${{ secrets.CI_PAT_TOKEN }}
+          path: native-temp
+          sparse-checkout: |
+            ios
+            whatsnew
+
+      - name: 📂 Copy platform
+        run: |
+          cd app
+          rm -rf ios
+          cp -r ../native-temp/ios .
+          [ -d ../native-temp/whatsnew ] && cp -r ../native-temp/whatsnew . || true
+
+      # ========================================
+      # 2️⃣ SETUP & BUILD WEB
+      # ========================================
+      - name: 📦 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          
+      - name: 📚 Install & Build
+        run: |
+          cd app
+          cat > ./env.ts << 'EOF'
+          export const ENV = {
+            SUPABASE_URL: '',
+            SUPABASE_ANON_KEY: '',
+            POSTHOG_KEY: '',
+          }
+          EOF
+          npm install
+          npm run build
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_KEY }}
+          VITE_POSTHOG_KEY: ${{ secrets.VITE_POSTHOG_KEY }}
+          
+      - name: 📱 Sync Capacitor
+        run: cd app && npx cap sync ios
+
+      # ========================================
+      # 3️⃣ COCOAPODS
+      # ========================================
+      - name: 💎 Install CocoaPods
+        run: |
+          gem install xcodeproj cocoapods
+          cd app/ios/App
+          rm -rf Pods Podfile.lock
+          pod install --repo-update
+
+      # ========================================
+      # 4️⃣ VERSION
+      # ========================================
+      - name: 🔢 Configure Version
+        run: |
+          cd app
+          VERSION=$(grep '"version"' package.json | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
+          BUILD_NUMBER=$((${{ github.run_number }} + 88))
+          echo "IOS_VERSION=$VERSION" >> $GITHUB_ENV
+          echo "IOS_BUILD_NUMBER=$BUILD_NUMBER" >> $GITHUB_ENV
+
+      # ========================================
+      # 5️⃣ CERTIFICATS
+      # ========================================
+      - name: 🔐 Import certificates
+        env:
+          P12_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+        run: |
+          security create-keychain -p actions ios.keychain
+          security default-keychain -s ios.keychain
+          security unlock-keychain -p actions ios.keychain
+          security set-keychain-settings -t 3600 -u ios.keychain
+          
+          echo "${{ secrets.IOS_CERTIFICATE_P12 }}" | base64 --decode > /tmp/cert.p12
+          security import /tmp/cert.p12 -k ios.keychain -T /usr/bin/codesign -P "${P12_PASSWORD:-}"
+          security set-key-partition-list -S apple-tool:,apple: -s -k actions ios.keychain
+          rm -f /tmp/cert.p12
+          
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          echo "${{ secrets.IOS_PROVISIONING_PROFILE }}" | base64 --decode > /tmp/profile.mobileprovision
+          PROFILE_UUID=$(/usr/libexec/PlistBuddy -c "Print :UUID" /dev/stdin <<< $(security cms -D -i /tmp/profile.mobileprovision))
+          cp /tmp/profile.mobileprovision ~/Library/MobileDevice/Provisioning\ Profiles/${PROFILE_UUID}.mobileprovision
+          echo "PROFILE_UUID=${PROFILE_UUID}" >> $GITHUB_ENV
+          rm -f /tmp/profile.mobileprovision
+
+      # ========================================
+      # 6️⃣ CONFIGURE XCODE
+      # ========================================
+      - name: 🔧 Configure Xcode
+        run: |
+          cd app/ios/App
+          ruby << 'RUBY'
+          require 'xcodeproj'
+          project = Xcodeproj::Project.open('App.xcodeproj')
+          app_target = project.targets.find { |t| t.name == 'App' }
+          
+          app_target.build_configurations.each do |config|
+            config.build_settings['MARKETING_VERSION'] = ENV['IOS_VERSION']
+            config.build_settings['CURRENT_PROJECT_VERSION'] = ENV['IOS_BUILD_NUMBER']
+            config.build_settings['CODE_SIGN_STYLE'] = 'Manual'
+            config.build_settings['CODE_SIGN_ENTITLEMENTS'] = 'App/App.entitlements'
+          end
+          
+          file_ref = project.main_group['App'].files.find { |f| f.path == 'GoogleService-Info.plist' }
+          if file_ref.nil?
+            file_ref = project.main_group['App'].new_file('GoogleService-Info.plist')
+          end
+          app_target.add_resources([file_ref]) unless app_target.resources_build_phase.files_references.include?(file_ref)
+          
+          if File.exist?('Pods/Pods.xcodeproj')
+            pods_project = Xcodeproj::Project.open('Pods/Pods.xcodeproj')
+            pods_project.targets.each do |target|
+              target.build_configurations.each do |config|
+                config.build_settings['CODE_SIGNING_ALLOWED'] = 'NO'
+                config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '14.0' if config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'].to_f < 14.0
+              end
+            end
+            pods_project.save
+          end
+          
+          project.save
+          RUBY
+
+      # ========================================
+      # 7️⃣ BUILD & EXPORT
+      # ========================================
+      - name: 🔨 Build & Export
+        run: |
+          cd app/ios/App
+          xcodebuild archive \
+            -workspace App.xcworkspace \
+            -scheme App \
+            -configuration Release \
+            -sdk iphoneos \
+            -archivePath build/App.xcarchive \
+            CODE_SIGN_STYLE=Manual \
+            DEVELOPMENT_TEAM="${{ secrets.IOS_TEAM_ID }}" \
+            CODE_SIGN_IDENTITY="Apple Distribution" \
+            PROVISIONING_PROFILE_SPECIFIER="${{ env.PROFILE_UUID }}" \
+            PROVISIONING_PROFILE="${{ env.PROFILE_UUID }}" \
+            CODE_SIGN_ENTITLEMENTS="App/App.entitlements" \
+            IPHONEOS_DEPLOYMENT_TARGET=14.0 \
+            -quiet
+          
+          cat > exportOptions.plist << EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key><string>app-store</string>
+            <key>signingStyle</key><string>manual</string>
+            <key>teamID</key><string>${{ secrets.IOS_TEAM_ID }}</string>
+            <key>provisioningProfiles</key>
+            <dict>
+              <key>${{ secrets.IOS_BUNDLE_ID }}</key>
+              <string>${{ env.PROFILE_UUID }}</string>
+            </dict>
+          </dict>
+          </plist>
+          EOF
+          
+          xcodebuild -exportArchive \
+            -archivePath build/App.xcarchive \
+            -exportPath build \
+            -exportOptionsPlist exportOptions.plist \
+            -quiet
+
+      # ========================================
+      # 8️⃣ UPLOAD
+      # ========================================
+      - name: 🚀 Upload to TestFlight
+        uses: apple-actions/upload-testflight-build@v1
+        with:
+          app-path: app/ios/App/build/App.ipa
+          issuer-id: ${{ secrets.APPSTORE_ISSUER_ID }}
+          api-key-id: ${{ secrets.APPSTORE_API_KEY_ID }}
+          api-private-key: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
+
+      # ========================================
+      # 9️⃣ NOTIFICATION
+      # ========================================
+      - name: ✅ Success
+        if: success()
+        run: exit 0
+
+      - name: ❌ Failed
+        if: failure()
+        run: exit 1

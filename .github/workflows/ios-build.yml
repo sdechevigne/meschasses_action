@@ -72,7 +72,7 @@ jobs:
             POSTHOG_KEY: '',
           }
           EOF
-          npm install
+          npm install --legacy-peer-deps
           npm run build
         env:
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}

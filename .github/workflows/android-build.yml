@@ -53,11 +53,11 @@ jobs:
       - name: 🔧 Setup Android SDK
         uses: android-actions/setup-android@v3
         with:
-          api-level: 35
+          api-level: 36
           ndk-version: '26.1.10909125'
 
       - name: 💾 Cache Gradle
-        uses: gradle/gradle-build-action@v2
+        uses: gradle/actions/setup-gradle@v4
         with:
           cache-read-only: false
 
@@ -74,7 +74,7 @@ jobs:
             POSTHOG_KEY: '',
           }
           EOF
-          npm install
+          npm install --legacy-peer-deps
 
       - name: 🏗️ Build web
         run: cd app && npm run build

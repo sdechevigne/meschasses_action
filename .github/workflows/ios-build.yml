@@ -37,23 +37,6 @@ jobs:
           token: ${{ secrets.CI_PAT_TOKEN }}
           path: app
 
-      - name: 📥 Checkout native
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ secrets.NATIVES_REPO }}
-          token: ${{ secrets.CI_PAT_TOKEN }}
-          path: native-temp
-          sparse-checkout: |
-            ios
-            whatsnew
-
-      - name: 📂 Copy platform
-        run: |
-          cd app
-          rm -rf ios
-          cp -r ../native-temp/ios .
-          [ -d ../native-temp/whatsnew ] && cp -r ../native-temp/whatsnew . || true
-
       # ========================================
       # 2️⃣ SETUP & BUILD WEB
       # ========================================

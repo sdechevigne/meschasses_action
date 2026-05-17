@@ -46,9 +46,6 @@ jobs:
 
       - name: 🔧 Setup Android SDK
         uses: android-actions/setup-android@v3
-        with:
-          api-level: 36
-          ndk-version: '26.1.10909125'
 
       - name: 💾 Cache Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -143,14 +140,6 @@ jobs:
       # ========================================
       # 8️⃣ ARTIFACTS & NOTIFICATIONS
       # ========================================
-      - name: 📦 Upload artifact (échec uniquement)
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: android-failure-${{ github.run_number }}
-          path: app/android/app/build/outputs/
-          retention-days: 7
-
       - name: ✅ Success
         if: success()
         run: exit 0

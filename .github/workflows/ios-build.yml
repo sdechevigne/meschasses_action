@@ -227,14 +227,6 @@ jobs:
       # ========================================
       # 9️⃣ ARTIFACTS & NOTIFICATIONS
       # ========================================
-      - name: 📦 Upload artifact (échec uniquement)
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ios-failure-${{ github.run_number }}
-          path: app/ios/App/build/
-          retention-days: 7
-
       - name: ✅ Success
         if: success()
         run: exit 0

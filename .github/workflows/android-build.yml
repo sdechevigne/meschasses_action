@@ -133,6 +133,14 @@ jobs:
       # ========================================
       # 8️⃣ NOTIFICATION
       # ========================================
+      - name: 📦 Upload artifact (échec uniquement)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-failure-${{ github.run_number }}
+          path: app/android/app/build/outputs/
+          retention-days: 7
+
       - name: ✅ Success
         if: success()
         run: exit 0

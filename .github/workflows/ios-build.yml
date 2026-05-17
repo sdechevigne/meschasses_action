@@ -12,14 +12,17 @@ jobs:
 
     steps:
       # ========================================
-      # 0️⃣ SELECT XCODE 26 (iOS 26 SDK required by App Store)
+      # 0️⃣ SELECT XCODE (26 préféré, fallback 16)
       # ========================================
-      - name: 🛠️ Select Xcode 26
+      - name: 🛠️ Select Xcode
         run: |
           ls /Applications | grep -i "^Xcode" || true
           XCODE_PATH=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
           if [ -z "$XCODE_PATH" ]; then
-            echo "::error::Xcode 26 not found on runner"
+            XCODE_PATH=$(ls -d /Applications/Xcode_16*.app 2>/dev/null | sort -V | tail -1)
+          fi
+          if [ -z "$XCODE_PATH" ]; then
+            echo "::error::Aucun Xcode 26 ou 16 trouvé sur le runner"
             exit 1
           fi
           echo "Using $XCODE_PATH"
@@ -44,7 +47,14 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22'
-          
+
+      - name: 💾 Cache npm
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-npm-${{ hashFiles('app/package-lock.json') }}
+          restore-keys: ${{ runner.os }}-npm-
+
       - name: 📚 Install & Build
         run: |
           cd app
@@ -105,7 +115,9 @@ jobs:
           
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
           echo "${{ secrets.IOS_PROVISIONING_PROFILE }}" | base64 --decode > /tmp/profile.mobileprovision
-          PROFILE_UUID=$(/usr/libexec/PlistBuddy -c "Print :UUID" /dev/stdin <<< $(security cms -D -i /tmp/profile.mobileprovision))
+          security cms -D -i /tmp/profile.mobileprovision > /tmp/profile.plist
+          PROFILE_UUID=$(/usr/libexec/PlistBuddy -c "Print :UUID" /tmp/profile.plist)
+          rm -f /tmp/profile.plist
           cp /tmp/profile.mobileprovision ~/Library/MobileDevice/Provisioning\ Profiles/${PROFILE_UUID}.mobileprovision
           echo "PROFILE_UUID=${PROFILE_UUID}" >> $GITHUB_ENV
           rm -f /tmp/profile.mobileprovision
@@ -206,6 +218,14 @@ jobs:
       # ========================================
       # 9️⃣ NOTIFICATION
       # ========================================
+      - name: 📦 Upload artifact (échec uniquement)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-failure-${{ github.run_number }}
+          path: app/ios/App/build/
+          retention-days: 7
+
       - name: ✅ Success
         if: success()
         run: exit 0

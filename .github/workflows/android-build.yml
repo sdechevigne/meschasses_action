@@ -2,6 +2,15 @@ name: 🤖 Build & Deploy Android
 
 on:
   workflow_dispatch:
+    inputs:
+      release_notes:
+        description: 'Résumé du build (affiché dans l''historique)'
+        required: false
+        default: ''
+
+concurrency:
+  group: android-build
+  cancel-in-progress: true
 
 jobs:
   build-android:
@@ -97,6 +106,7 @@ jobs:
       - name: 🔥 Setup Firebase
         run: |
           echo "${{ secrets.ANDROID_GOOGLE_SERVICES_JSON }}" | base64 --decode > app/android/app/google-services.json
+          jq empty app/android/app/google-services.json || (echo "::error::google-services.json invalide" && exit 1)
 
       # ========================================
       # 6️⃣ BUILD
@@ -131,7 +141,7 @@ jobs:
           whatsNewDirectory: app/whatsnew
 
       # ========================================
-      # 8️⃣ NOTIFICATION
+      # 8️⃣ ARTIFACTS & NOTIFICATIONS
       # ========================================
       - name: 📦 Upload artifact (échec uniquement)
         if: failure()

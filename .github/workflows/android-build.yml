@@ -125,6 +125,27 @@ jobs:
       # ========================================
       # 7️⃣ PUBLISH
       # ========================================
+      - name: 📝 Convert whatsnew to Play Store format
+        run: |
+          if [ ! -d app/whatsnew ]; then
+            echo "⚠️ app/whatsnew/ introuvable, skip"
+            exit 0
+          fi
+          # r0adkll/upload-google-play attend whatsnew-<lang>-<COUNTRY> (fichier)
+          # alors que le repo mobile stocke whatsnew/<lang>/default.txt
+          declare -A LANG_COUNTRY=( [fr]=FR [en]=US [es]=ES [de]=DE [it]=IT )
+          for lang_dir in app/whatsnew/*/; do
+            lang=$(basename "$lang_dir")
+            country=${LANG_COUNTRY[$lang]:-${lang^^}}
+            src="$lang_dir/default.txt"
+            if [ -f "$src" ]; then
+              dest="app/whatsnew/whatsnew-${lang}-${country}"
+              head -c 500 "$src" > "$dest"
+              echo "  ✓ $src → $dest"
+            fi
+          done
+          ls -la app/whatsnew/
+
       - name: 🚀 Upload to Play Store
         uses: r0adkll/upload-google-play@v1
         with:

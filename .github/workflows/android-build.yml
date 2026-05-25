@@ -155,7 +155,7 @@ jobs:
           tracks: internal
           inAppUpdatePriority: 5
           status: completed
-          changesNotSentForReview: true
+          changesNotSentForReview: false
           whatsNewDirectory: app/whatsnew
 
       # ========================================

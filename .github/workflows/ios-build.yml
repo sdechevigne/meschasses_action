@@ -49,6 +49,11 @@ jobs:
           token: ${{ secrets.CI_PAT_TOKEN }}
           path: app
 
+      - name: 📥 Checkout CI repo (scripts)
+        uses: actions/checkout@v4
+        with:
+          path: ci
+
       # ========================================
       # 2️⃣ SETUP & BUILD WEB
       # ========================================
@@ -223,6 +228,24 @@ jobs:
           issuer-id: ${{ secrets.APPSTORE_ISSUER_ID }}
           api-key-id: ${{ secrets.APPSTORE_API_KEY_ID }}
           api-private-key: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
+
+      # ========================================
+      # 📝 NOUVEAUTÉS DE CETTE VERSION (App Store)
+      # ========================================
+      # Pousse whatsnew/<lang>/default.txt vers le champ public "Nouveautés de
+      # cette version" (versionLocalizations.whatsNew) via l'App Store Connect API.
+      # Non bloquant : un échec métadonnée ne casse pas un build déjà sur TestFlight.
+      - name: 📝 Update App Store release notes
+        if: success()
+        continue-on-error: true
+        env:
+          ASC_ISSUER_ID: ${{ secrets.APPSTORE_ISSUER_ID }}
+          ASC_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
+          ASC_PRIVATE_KEY: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
+          ASC_BUNDLE_ID: ${{ secrets.IOS_BUNDLE_ID }}
+          IOS_VERSION: ${{ env.IOS_VERSION }}
+          WHATSNEW_DIR: app/whatsnew
+        run: node ci/.github/scripts/update-appstore-whatsnew.mjs
 
       # ========================================
       # 9️⃣ ARTIFACTS & NOTIFICATIONS

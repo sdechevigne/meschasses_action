@@ -234,10 +234,9 @@ jobs:
       # ========================================
       # Pousse whatsnew/<lang>/default.txt vers le champ public "Nouveautés de
       # cette version" (versionLocalizations.whatsNew) via l'App Store Connect API.
-      # Non bloquant : un échec métadonnée ne casse pas un build déjà sur TestFlight.
+      # Bloquant : un échec ici fait échouer le job (continue-on-error retiré).
       - name: 📝 Update App Store release notes
         if: success()
-        continue-on-error: true
         env:
           ASC_ISSUER_ID: ${{ secrets.APPSTORE_ISSUER_ID }}
           ASC_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}

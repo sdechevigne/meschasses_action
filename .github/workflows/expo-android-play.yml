@@ -72,12 +72,12 @@ jobs:
       - name: Install dependencies
         run: cd app && pnpm install --frozen-lockfile
 
-      # OFFSET élevé : le package com.meschasses est PARTAGÉ avec l'app live ;
-      # le versionCode doit dépasser le dernier déjà uploadé sur Play.
-      # 10000 = marge de sécurité (à ajuster si le dernier versionCode réel est plus haut).
+      # Le package com.meschasses est PARTAGÉ avec l'app live ; le versionCode
+      # doit dépasser le dernier uploadé sur Play (322 au moment du setup).
+      # github.run_number repart à 1 pour ce workflow -> OFFSET 400 = 1er versionCode 401.
       - name: Compute build number
         env:
-          OFFSET: "10000"
+          OFFSET: "400"
         run: |
           BN=$(( ${{ github.run_number }} + OFFSET ))
           echo "BUILD_NUMBER=$BN" >> "$GITHUB_ENV"

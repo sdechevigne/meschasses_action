@@ -1,0 +1,133 @@
+name: Expo iOS TestFlight
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_notes:
+        description: "Note interne"
+        required: false
+        default: ""
+  push:
+    tags:
+      - "tf-v*"
+
+concurrency:
+  group: expo-ios-testflight
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    runs-on: macos-15
+    timeout-minutes: 90
+    environment: production
+
+    steps:
+      # Checkout du monorepo (pnpm/Turborepo) via un PAT dédié.
+      # L'app Expo vit dans app/apps/mobile ; la racine workspace est app/.
+      - name: Checkout monorepo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ secrets.MONOREPO_REPO }}
+          token: ${{ secrets.CI_PAT_TOKEN }}
+          path: app
+
+      - name: Select Xcode 26.x
+        run: |
+          XCODE_PATH=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+          if [ -z "$XCODE_PATH" ]; then
+            echo "::error::Xcode 26.x not found on runner"
+            exit 1
+          fi
+          sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
+          xcodebuild -version
+
+      # pnpm DOIT être installé avant setup-node pour que cache: pnpm fonctionne.
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: app/pnpm-lock.yaml
+
+      # Cache CocoaPods : évite de re-télécharger les podspecs à chaque build
+      # (eas build --local fait pod install dans un dossier temporaire mais réutilise
+      # ces caches utilisateur). Clé sur le lockfile JS = proxy des versions natives.
+      - name: Cache CocoaPods
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cocoapods
+            ~/Library/Caches/CocoaPods
+          key: pods-${{ runner.os }}-${{ hashFiles('app/pnpm-lock.yaml') }}
+          restore-keys: pods-${{ runner.os }}-
+
+      - name: Setup EAS CLI
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      # Install à la RACINE du workspace : installe aussi packages/core.
+      - name: Install dependencies
+        run: cd app && pnpm install --frozen-lockfile
+
+      - name: Compute build number
+        env:
+          OFFSET: "100"
+        run: |
+          BN=$(( ${{ github.run_number }} + OFFSET ))
+          echo "BUILD_NUMBER=$BN" >> "$GITHUB_ENV"
+
+      # Cible le app.json de l'app Expo dans le monorepo.
+      - name: Inject build number
+        run: |
+          node -e '
+            const fs = require("fs");
+            const p = "app/apps/mobile/app.json";
+            const j = JSON.parse(fs.readFileSync(p, "utf8"));
+            const bn = process.env.BUILD_NUMBER;
+            j.expo.ios = j.expo.ios || {};
+            j.expo.android = j.expo.android || {};
+            j.expo.ios.buildNumber = String(bn);
+            j.expo.android.versionCode = Number(bn);
+            fs.writeFileSync(p, JSON.stringify(j, null, 2) + "\n");
+          '
+
+      # eas build --local s'exécute dans apps/mobile. Sortie écrite dans app/
+      # (../../app-store.ipa depuis apps/mobile) pour rester hors de l'app.
+      # Variables EXPO_PUBLIC_* mappées sur les secrets existants (réutilisés).
+      - name: Build .ipa
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          EXPO_PUBLIC_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_KEY }}
+          # Placeholder : activer plus tard quand l'app utilisera PostHog.
+          # EXPO_PUBLIC_POSTHOG_KEY: ${{ secrets.VITE_POSTHOG_KEY }}
+        run: |
+          cd app/apps/mobile
+          eas build \
+            --platform ios \
+            --profile production \
+            --local \
+            --non-interactive \
+            --output ../../app-store.ipa
+
+      - name: Upload to TestFlight
+        uses: apple-actions/upload-testflight-build@v5
+        with:
+          app-path: app/app-store.ipa
+          issuer-id: ${{ secrets.APPSTORE_ISSUER_ID }}
+          api-key-id: ${{ secrets.APPSTORE_API_KEY_ID }}
+          api-private-key: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
+
+      # Aucun artifact n'est conservé : le .ipa signé ne va QUE vers TestFlight.
+      # On efface le binaire en fin de job (le runner est de toute façon détruit,
+      # mais hygiène : rien de récupérable n'est laissé derrière).
+      - name: Wipe build outputs
+        if: always()
+        run: rm -f app/app-store.ipa

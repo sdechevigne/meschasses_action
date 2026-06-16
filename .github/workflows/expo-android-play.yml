@@ -1,0 +1,145 @@
+name: Expo Android Play
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_notes:
+        description: "Note interne"
+        required: false
+        default: ""
+  push:
+    tags:
+      - "play-v*"
+
+concurrency:
+  group: expo-android-play
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: production
+
+    steps:
+      # Checkout du monorepo (pnpm/Turborepo) via un PAT dédié.
+      # L'app Expo vit dans app/apps/mobile ; la racine workspace est app/.
+      - name: Checkout monorepo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ secrets.MONOREPO_REPO }}
+          token: ${{ secrets.CI_PAT_TOKEN }}
+          path: app
+
+      # pnpm DOIT être installé avant setup-node pour que cache: pnpm fonctionne.
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: app/pnpm-lock.yaml
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('app/pnpm-lock.yaml') }}
+          restore-keys: gradle-${{ runner.os }}-
+
+      - name: Setup EAS CLI
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      # Install à la RACINE du workspace : installe aussi packages/core.
+      - name: Install dependencies
+        run: cd app && pnpm install --frozen-lockfile
+
+      - name: Compute build number
+        env:
+          OFFSET: "100"
+        run: |
+          BN=$(( ${{ github.run_number }} + OFFSET ))
+          echo "BUILD_NUMBER=$BN" >> "$GITHUB_ENV"
+
+      # Cible le app.json de l'app Expo dans le monorepo.
+      - name: Inject build number
+        run: |
+          node -e '
+            const fs = require("fs");
+            const p = "app/apps/mobile/app.json";
+            const j = JSON.parse(fs.readFileSync(p, "utf8"));
+            const bn = process.env.BUILD_NUMBER;
+            j.expo.ios = j.expo.ios || {};
+            j.expo.android = j.expo.android || {};
+            j.expo.ios.buildNumber = String(bn);
+            j.expo.android.versionCode = Number(bn);
+            fs.writeFileSync(p, JSON.stringify(j, null, 2) + "\n");
+          '
+
+      # Le service account Google Play (secret) est écrit dans le fichier attendu
+      # par eas.json (submit.production.android.serviceAccountKeyPath, relatif à
+      # apps/mobile : ../../play-service-account.json -> app/play-service-account.json).
+      # Jamais commité, effacé en fin de job. Le secret passe par une variable d'env
+      # (pas d'interpolation inline dans la ligne shell) puis est écrit via node sans
+      # le réémettre.
+      - name: Write Play service account
+        env:
+          GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
+        run: |
+          node -e 'const j=process.env.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON||""; JSON.parse(j); require("fs").writeFileSync("app/play-service-account.json", j); ' \
+            || { echo "::error::GOOGLE_PLAY_SERVICE_ACCOUNT_JSON manquant ou JSON invalide"; exit 1; }
+
+      # eas build --local s'exécute dans apps/mobile. Sortie écrite dans app/
+      # (../../app-release.aab depuis apps/mobile) pour rester hors de l'app.
+      # Variables EXPO_PUBLIC_* mappées sur les secrets existants (réutilisés).
+      - name: Build .aab
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          EXPO_PUBLIC_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_KEY }}
+          # Placeholder : activer plus tard quand l'app utilisera PostHog.
+          # EXPO_PUBLIC_POSTHOG_KEY: ${{ secrets.VITE_POSTHOG_KEY }}
+        run: |
+          cd app/apps/mobile
+          eas build \
+            --platform android \
+            --profile production \
+            --local \
+            --non-interactive \
+            --output ../../app-release.aab
+
+      # eas submit lit le track (internal) et le serviceAccountKeyPath depuis eas.json.
+      - name: Submit to Play (internal)
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          cd app/apps/mobile
+          eas submit \
+            --platform android \
+            --profile production \
+            --path ../../app-release.aab \
+            --non-interactive
+
+      # Aucun artifact n'est conservé : l'.aab ne va QUE vers Play (internal).
+      # On efface le binaire ET la clé service account en fin de job.
+      - name: Wipe build outputs and secrets
+        if: always()
+        run: rm -f app/app-release.aab app/play-service-account.json

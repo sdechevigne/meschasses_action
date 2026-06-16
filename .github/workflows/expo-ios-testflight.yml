@@ -108,6 +108,9 @@ jobs:
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
           EAS_BUILD_NO_EXPO_GO_WARNING: "true"
+          # Bundle id partagé avec l'app live : ne PAS laisser EAS désactiver les
+          # capabilities (push/apple-auth/associated-domains) déjà actives en prod.
+          EXPO_NO_CAPABILITY_SYNC: "1"
           EXPO_PUBLIC_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
           EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_KEY }}
           # Placeholder : activer plus tard quand l'app utilisera PostHog.

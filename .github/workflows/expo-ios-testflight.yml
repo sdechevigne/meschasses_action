@@ -76,9 +76,12 @@ jobs:
       - name: Install dependencies
         run: cd app && pnpm install --frozen-lockfile
 
+      # OFFSET élevé : le bundle id com.meschasses est PARTAGÉ avec l'app live ;
+      # le buildNumber doit dépasser le dernier déjà uploadé sur TestFlight.
+      # 10000 = marge de sécurité (à ajuster si le dernier build réel est plus haut).
       - name: Compute build number
         env:
-          OFFSET: "100"
+          OFFSET: "10000"
         run: |
           BN=$(( ${{ github.run_number }} + OFFSET ))
           echo "BUILD_NUMBER=$BN" >> "$GITHUB_ENV"

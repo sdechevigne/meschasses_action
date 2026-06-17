@@ -124,13 +124,22 @@ jobs:
             --non-interactive \
             --output ../../app-store.ipa
 
-      - name: Upload to TestFlight
-        uses: apple-actions/upload-testflight-build@v5
-        with:
-          app-path: app/app-store.ipa
-          issuer-id: ${{ secrets.APPSTORE_ISSUER_ID }}
-          api-key-id: ${{ secrets.APPSTORE_API_KEY_ID }}
-          api-private-key: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
+      # Upload via eas submit (symétrique avec Android). EAS gère le token App Store
+      # Connect et son rafraîchissement -> évite le 401 de l'ancienne action quand le
+      # poll post-upload dépassait la durée de vie (~20 min) du token figé.
+      # Prérequis : la clé API App Store Connect doit être stockée dans EAS
+      # (eas credentials -> iOS -> App Store Connect: Manage your API Key).
+      # eas submit résout l'app par bundle id (com.meschasses) via cette clé.
+      - name: Submit to TestFlight
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          cd app/apps/mobile
+          eas submit \
+            --platform ios \
+            --profile production \
+            --path ../../app-store.ipa \
+            --non-interactive
 
       # Aucun artifact n'est conservé : le .ipa signé ne va QUE vers TestFlight.
       # On efface le binaire en fin de job (le runner est de toute façon détruit,

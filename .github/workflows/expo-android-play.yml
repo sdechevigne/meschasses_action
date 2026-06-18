@@ -110,6 +110,52 @@ jobs:
           node -e 'const j=process.env.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON||""; JSON.parse(j); require("fs").writeFileSync("app/play-service-account.json", j); ' \
             || { echo "::error::GOOGLE_PLAY_SERVICE_ACCOUNT_JSON manquant ou JSON invalide"; exit 1; }
 
+      # Le package com.meschasses utilise Play App Signing : Google attend l'.aab
+      # signé avec la clé d'upload HISTORIQUE de l'app live (SHA1 EA:F9:...).
+      # On RÉUTILISE le keystore de l'ancien workflow Capacitor (android-build.yml),
+      # déjà prouvé bon par les builds Play passés : mêmes secrets, aucun nouveau.
+      # On le fournit à `eas build --local` via un credentials.json local (jamais
+      # commité, effacé en fin de job). Sans ça, EAS signe avec un keystore
+      # auto-généré et Play rejette ("wrong key").
+      - name: Write Android upload keystore + credentials.json
+        env:
+          ANDROID_KEYSTORE_FILE: ${{ secrets.ANDROID_KEYSTORE_FILE }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -e
+          [ -n "$ANDROID_KEYSTORE_FILE" ] || { echo "::error::ANDROID_KEYSTORE_FILE manquant"; exit 1; }
+          [ -n "$ANDROID_KEYSTORE_PASSWORD" ] || { echo "::error::ANDROID_KEYSTORE_PASSWORD manquant"; exit 1; }
+          [ -n "$ANDROID_KEY_ALIAS" ] || { echo "::error::ANDROID_KEY_ALIAS manquant"; exit 1; }
+          # Décode le keystore d'upload (relatif à apps/mobile, comme credentials.json).
+          echo "$ANDROID_KEYSTORE_FILE" | base64 -d > app/apps/mobile/release.keystore
+          # credentials.json consommé par `eas build --local`. keyPassword -> storePassword si absent.
+          node -e '
+            const fs = require("fs");
+            const c = {
+              android: {
+                keystore: {
+                  keystorePath: "release.keystore",
+                  keystorePassword: process.env.ANDROID_KEYSTORE_PASSWORD,
+                  keyAlias: process.env.ANDROID_KEY_ALIAS,
+                  keyPassword: process.env.ANDROID_KEY_PASSWORD || process.env.ANDROID_KEYSTORE_PASSWORD,
+                },
+              },
+            };
+            fs.writeFileSync("app/apps/mobile/credentials.json", JSON.stringify(c, null, 2) + "\n");
+          '
+          # Force EAS à utiliser credentials.json en --non-interactive (pas de credentials distants).
+          node -e '
+            const fs = require("fs");
+            const p = "app/apps/mobile/eas.json";
+            const j = JSON.parse(fs.readFileSync(p, "utf8"));
+            j.build = j.build || {};
+            j.build.production = j.build.production || {};
+            j.build.production.credentialsSource = "local";
+            fs.writeFileSync(p, JSON.stringify(j, null, 2) + "\n");
+          '
+
       # eas build --local s'exécute dans apps/mobile. Sortie écrite dans app/
       # (../../app-release.aab depuis apps/mobile) pour rester hors de l'app.
       # Variables EXPO_PUBLIC_* mappées sur les secrets existants (réutilisés).
@@ -145,7 +191,8 @@ jobs:
             --non-interactive
 
       # Aucun artifact n'est conservé : l'.aab ne va QUE vers Play (internal).
-      # On efface le binaire ET la clé service account en fin de job.
+      # On efface le binaire, la clé service account ET le keystore d'upload
+      # (+ credentials.json) en fin de job.
       - name: Wipe build outputs and secrets
         if: always()
-        run: rm -f app/app-release.aab app/play-service-account.json
+        run: rm -f app/app-release.aab app/play-service-account.json app/apps/mobile/release.keystore app/apps/mobile/credentials.json

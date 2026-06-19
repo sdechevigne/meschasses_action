@@ -73,11 +73,11 @@ jobs:
         run: cd app && pnpm install --frozen-lockfile
 
       # Le package com.meschasses est PARTAGÉ avec l'app live ; le versionCode
-      # doit dépasser le dernier uploadé sur Play (322 au moment du setup).
-      # github.run_number repart à 1 pour ce workflow -> OFFSET 400 = 1er versionCode 401.
+      # doit dépasser le dernier build Capacitor en prod (2006147 en juin 2025).
+      # github.run_number repart à 1 pour ce workflow -> OFFSET 2100000.
       - name: Compute build number
         env:
-          OFFSET: "400"
+          OFFSET: "2100000"
         run: |
           BN=$(( ${{ github.run_number }} + OFFSET ))
           echo "BUILD_NUMBER=$BN" >> "$GITHUB_ENV"

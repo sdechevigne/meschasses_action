@@ -115,6 +115,16 @@ jobs:
           EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_KEY }}
           # Placeholder : activer plus tard quand l'app utilisera PostHog.
           # EXPO_PUBLIC_POSTHOG_KEY: ${{ secrets.VITE_POSTHOG_KEY }}
+          # Crash reporting Sentry — DSN inliné dans le bundle (EXPO_PUBLIC_*).
+          EXPO_PUBLIC_SENTRY_DSN: ${{ secrets.EXPO_PUBLIC_SENTRY_DSN }}
+          EXPO_PUBLIC_SENTRY_ENV: "production"
+          # Upload des source maps pendant le build : le config plugin
+          # @sentry/react-native injecte une phase sentry-cli (Xcode) qui lit ces
+          # variables d'env. SANS elles, les stack traces restent minifiées. org EU.
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+          SENTRY_URL: ${{ secrets.SENTRY_URL }}
         run: |
           cd app/apps/mobile
           eas build \

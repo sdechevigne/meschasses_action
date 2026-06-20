@@ -156,6 +156,20 @@ jobs:
             fs.writeFileSync(p, JSON.stringify(j, null, 2) + "\n");
           '
 
+      # app.json référence "googleServicesFile": "./google-services.json" (relatif
+      # à apps/mobile) et le plugin expo-notifications l'exige au prebuild pour le
+      # FCM Android. Le fichier est gitignoré (jamais commité) -> on le matérialise
+      # depuis le secret base64 ANDROID_GOOGLE_SERVICES_JSON (déjà utilisé par
+      # l'ancien workflow Capacitor android-build.yml). Effacé en fin de job.
+      - name: Write Firebase google-services.json
+        env:
+          ANDROID_GOOGLE_SERVICES_JSON: ${{ secrets.ANDROID_GOOGLE_SERVICES_JSON }}
+        run: |
+          set -e
+          [ -n "$ANDROID_GOOGLE_SERVICES_JSON" ] || { echo "::error::ANDROID_GOOGLE_SERVICES_JSON manquant"; exit 1; }
+          echo "$ANDROID_GOOGLE_SERVICES_JSON" | base64 --decode > app/apps/mobile/google-services.json
+          jq empty app/apps/mobile/google-services.json || { echo "::error::google-services.json invalide (JSON)"; exit 1; }
+
       # eas build --local s'exécute dans apps/mobile. Sortie écrite dans app/
       # (../../app-release.aab depuis apps/mobile) pour rester hors de l'app.
       # Variables EXPO_PUBLIC_* mappées sur les secrets existants (réutilisés).
@@ -169,6 +183,16 @@ jobs:
           EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_KEY }}
           # Placeholder : activer plus tard quand l'app utilisera PostHog.
           # EXPO_PUBLIC_POSTHOG_KEY: ${{ secrets.VITE_POSTHOG_KEY }}
+          # Crash reporting Sentry — DSN inliné dans le bundle (EXPO_PUBLIC_*).
+          EXPO_PUBLIC_SENTRY_DSN: ${{ secrets.EXPO_PUBLIC_SENTRY_DSN }}
+          EXPO_PUBLIC_SENTRY_ENV: "production"
+          # Upload des source maps pendant le build : le config plugin
+          # @sentry/react-native injecte une étape sentry-cli (Gradle) qui lit ces
+          # variables d'env. SANS elles, les stack traces restent minifiées. org EU.
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+          SENTRY_URL: ${{ secrets.SENTRY_URL }}
         run: |
           cd app/apps/mobile
           eas build \
@@ -195,4 +219,4 @@ jobs:
       # (+ credentials.json) en fin de job.
       - name: Wipe build outputs and secrets
         if: always()
-        run: rm -f app/app-release.aab app/play-service-account.json app/apps/mobile/release.keystore app/apps/mobile/credentials.json
+        run: rm -f app/app-release.aab app/play-service-account.json app/apps/mobile/release.keystore app/apps/mobile/credentials.json app/apps/mobile/google-services.json

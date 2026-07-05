@@ -169,22 +169,17 @@ jobs:
           [ -n "$ANDROID_GOOGLE_SERVICES_JSON" ] || { echo "::error::ANDROID_GOOGLE_SERVICES_JSON manquant"; exit 1; }
           echo "$ANDROID_GOOGLE_SERVICES_JSON" | base64 --decode > app/apps/mobile/google-services.json
           jq empty app/apps/mobile/google-services.json || { echo "::error::google-services.json invalide (JSON)"; exit 1; }
-          # `eas build --local` empaquette le projet VIA GIT et EXCLUT les fichiers
-          # gitignorés (google-services.json l'est, cf apps/mobile/.gitignore). Un
-          # simple `git add -f` (staging) NE SUFFIT PAS : EAS n'inclut que les
-          # fichiers de HEAD + les modifs non-commitées de fichiers DÉJÀ suivis, pas
-          # un fichier gitignoré seulement stagé. On fait donc un COMMIT LOCAL
-          # ÉPHÉMÈRE (jamais poussé, runner détruit en fin de job) pour le faire
-          # entrer dans HEAD -> EAS l'inclut à coup sûr dans l'archive de build.
-          # Contrairement au keystore/credentials/service-account (lus par eas-cli
-          # HORS archive), ce fichier est lu PENDANT le prebuild : il DOIT être dans
-          # l'archive. Le commit ne cible QUE ce fichier : les autres injections
-          # (build number app.json, eas.json) restent non-commitées et prises comme
-          # d'habitude.
-          git -C app config user.email "ci@meschasses.local"
-          git -C app config user.name "MesChasses CI"
-          git -C app add -f apps/mobile/google-services.json
-          git -C app commit -q -m "ci: inject google-services.json (éphémère, non poussé)"
+          # `eas build --local` construit l'archive du projet en COPIANT le working
+          # tree puis en appliquant un filtre `.gitignore` BRUT (parseur type
+          # `ignore`), indépendant du suivi git : ni `git add -f` ni un commit local
+          # ne suffisent (testé, le fichier reste exclu). Le fichier est lu PENDANT
+          # le prebuild (config-plugins copie google-services.json), donc il DOIT
+          # être dans l'archive. On retire donc la ligne du .gitignore (working tree,
+          # runner éphémère, jamais poussé) pour que le filtre cesse de l'exclure ;
+          # le fichier est déjà présent sur le disque -> il entre dans l'archive.
+          sed -i '/^google-services\.json$/d' app/apps/mobile/.gitignore
+          grep -q '^google-services\.json$' app/apps/mobile/.gitignore \
+            && { echo "::error::google-services.json toujours listé dans .gitignore"; exit 1; } || true
 
       # eas build --local s'exécute dans apps/mobile. Sortie écrite dans app/
       # (../../app-release.aab depuis apps/mobile) pour rester hors de l'app.

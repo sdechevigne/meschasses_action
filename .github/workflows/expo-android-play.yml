@@ -169,6 +169,15 @@ jobs:
           [ -n "$ANDROID_GOOGLE_SERVICES_JSON" ] || { echo "::error::ANDROID_GOOGLE_SERVICES_JSON manquant"; exit 1; }
           echo "$ANDROID_GOOGLE_SERVICES_JSON" | base64 --decode > app/apps/mobile/google-services.json
           jq empty app/apps/mobile/google-services.json || { echo "::error::google-services.json invalide (JSON)"; exit 1; }
+          # `eas build --local` empaquette le projet VIA GIT et EXCLUT les fichiers
+          # gitignorés (google-services.json l'est, cf apps/mobile/.gitignore). Sans
+          # ça le fichier existe sur le runner mais n'entre PAS dans l'archive de
+          # build -> le prebuild plante (ENOENT ... google-services.json). On le
+          # force-add à l'index git du monorepo (staging uniquement, JAMAIS commité,
+          # runner éphémère) pour qu'EAS l'inclue dans l'archive. Contrairement au
+          # keystore/credentials/service-account (lus par eas-cli HORS archive), ce
+          # fichier est lu PENDANT le prebuild -> il doit être dans l'archive.
+          git -C app add -f apps/mobile/google-services.json
 
       # eas build --local s'exécute dans apps/mobile. Sortie écrite dans app/
       # (../../app-release.aab depuis apps/mobile) pour rester hors de l'app.

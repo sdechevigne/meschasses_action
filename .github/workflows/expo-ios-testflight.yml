@@ -11,6 +11,10 @@ on:
     tags:
       - "tf-v*"
 
+# Repo PUBLIC : le GITHUB_TOKEN n'est utilisé par aucun step (le checkout du
+# monorepo passe par CI_PAT_TOKEN). On lui retire donc TOUT droit sur ce repo.
+permissions: {}
+
 concurrency:
   group: expo-ios-testflight
   cancel-in-progress: true
@@ -135,26 +139,72 @@ jobs:
             --non-interactive \
             --output ../../app-store.ipa
 
-      # Upload via eas submit (symétrique avec Android). EAS gère le token App Store
-      # Connect et son rafraîchissement -> évite le 401 de l'ancienne action quand le
-      # poll post-upload dépassait la durée de vie (~20 min) du token figé.
-      # Prérequis : la clé API App Store Connect doit être stockée dans EAS
-      # (eas credentials -> iOS -> App Store Connect: Manage your API Key).
-      # eas submit résout l'app par bundle id (com.meschasses) via cette clé.
-      - name: Submit to TestFlight
+      # Upload DIRECT vers App Store Connect depuis le runner (xcrun altool), sans
+      # passer par la file d'attente des submissions EAS (qui ajoutait souvent
+      # plusieurs dizaines de minutes au job pour un simple transfert de binaire).
+      # altool ne fait QUE l'upload : il ne poll pas le statut de traitement, donc
+      # le 401 de l'ancienne action apple-actions (JWT expiré pendant le poll)
+      # ne peut pas se reproduire.
+      #
+      # REPO PUBLIC — contraintes tenues par ce step :
+      #  - la clé .p8 est écrite dans $HOME/private_keys (HORS du workspace) :
+      #    impossible qu'elle finisse dans l'archive `eas build --local`, dans un
+      #    commit local ou dans un artifact ;
+      #  - dossier en 0700 / fichier en 0600, effacé par un `trap` même si altool
+      #    échoue ou si le job est annulé (le wipe final est la 2e ceinture) ;
+      #  - chaque ligne du PEM est passée à ::add-mask:: avant toute écriture (le
+      #    masquage auto de GitHub est fiable sur une valeur mono-ligne, pas sur un
+      #    secret multi-ligne) ;
+      #  - aucune valeur de secret n'est echo, pas de `set -x`, pas de --verbose :
+      #    les logs publics ne contiennent que le statut de l'upload.
+      #
+      # Secrets réutilisés (déjà présents dans l'environment production, hérités de
+      # l'ancien workflow ios-build.yml) : APPSTORE_API_KEY_ID / APPSTORE_ISSUER_ID /
+      # APPSTORE_API_PRIVATE_KEY (PEM brut OU base64, les deux sont gérés). altool
+      # cherche la clé sous le nom AuthKey_<KEY_ID>.p8 — imposé par Apple.
+      - name: Upload to TestFlight (App Store Connect)
         env:
-          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          ASC_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.APPSTORE_ISSUER_ID }}
+          ASC_PRIVATE_KEY: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
         run: |
-          cd app/apps/mobile
-          eas submit \
-            --platform ios \
-            --profile production \
-            --path ../../app-store.ipa \
-            --non-interactive
+          set -euo pipefail
+          set +x
+          [ -n "$ASC_KEY_ID" ]      || { echo "::error::APPSTORE_API_KEY_ID manquant"; exit 1; }
+          [ -n "$ASC_ISSUER_ID" ]   || { echo "::error::APPSTORE_ISSUER_ID manquant"; exit 1; }
+          [ -n "$ASC_PRIVATE_KEY" ] || { echo "::error::APPSTORE_API_PRIVATE_KEY manquant"; exit 1; }
 
-      # Aucun artifact n'est conservé : le .ipa signé ne va QUE vers TestFlight.
-      # On efface le binaire en fin de job (le runner est de toute façon détruit,
-      # mais hygiène : rien de récupérable n'est laissé derrière).
+          # Masque chaque ligne du PEM (secret multi-ligne) avant tout traitement.
+          while IFS= read -r l; do
+            [ -n "$l" ] && echo "::add-mask::$l"
+          done <<< "$ASC_PRIVATE_KEY"
+
+          umask 077
+          KEY_DIR="$HOME/private_keys"
+          KEY_FILE="$KEY_DIR/AuthKey_${ASC_KEY_ID}.p8"
+          mkdir -p "$KEY_DIR" && chmod 700 "$KEY_DIR"
+          trap 'rm -f "$KEY_FILE"' EXIT
+
+          if printf '%s' "$ASC_PRIVATE_KEY" | grep -q "BEGIN PRIVATE KEY"; then
+            printf '%s\n' "$ASC_PRIVATE_KEY" > "$KEY_FILE"
+          else
+            printf '%s' "$ASC_PRIVATE_KEY" | base64 --decode > "$KEY_FILE"
+          fi
+          chmod 600 "$KEY_FILE"
+          openssl pkey -in "$KEY_FILE" -noout 2>/dev/null \
+            || { echo "::error::APPSTORE_API_PRIVATE_KEY invalide (ni PEM ni base64 de PEM)"; exit 1; }
+
+          xcrun altool --upload-app \
+            --type ios \
+            --file app/app-store.ipa \
+            --apiKey "$ASC_KEY_ID" \
+            --apiIssuer "$ASC_ISSUER_ID"
+
+      # Rien n'est conservé : ni artifact (aucun upload-artifact dans ce workflow),
+      # ni binaire, ni clé. Le .ipa signé ne va QUE vers App Store Connect.
+      # Le runner est détruit de toute façon — ceci est la 2e ceinture après le trap.
       - name: Wipe build outputs
         if: always()
-        run: rm -f app/app-store.ipa
+        run: |
+          rm -f app/app-store.ipa
+          rm -rf ~/private_keys

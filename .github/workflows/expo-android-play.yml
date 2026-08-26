@@ -11,6 +11,10 @@ on:
     tags:
       - "play-v*"
 
+# Repo PUBLIC : le GITHUB_TOKEN n'est utilisé par aucun step (le checkout du
+# monorepo passe par CI_PAT_TOKEN). On lui retire donc TOUT droit sur ce repo.
+permissions: {}
+
 concurrency:
   group: expo-android-play
   cancel-in-progress: true

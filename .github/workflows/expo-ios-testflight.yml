@@ -24,6 +24,10 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 90
     environment: production
+    # Lecture de CE repo (public) uniquement, pour le script d'annotation
+    # TestFlight. Le monorepo continue de passer par CI_PAT_TOKEN.
+    permissions:
+      contents: read
 
     steps:
       # Checkout du monorepo (pnpm/Turborepo) via un PAT dédié.
@@ -34,6 +38,19 @@ jobs:
           repository: ${{ secrets.MONOREPO_REPO }}
           token: ${{ secrets.CI_PAT_TOKEN }}
           path: app
+
+      # Trace build -> commit : le SHA du monorepo est capturé ICI (avant toute
+      # modification du working tree par les steps suivants) et réinjecté plus bas
+      # dans le champ "What to Test" du build TestFlight.
+      # Repo PUBLIC : la valeur passe par GITHUB_OUTPUT puis par `env:` — jamais
+      # par un `run:` interpolé, dont GitHub affiche le script rendu dans les logs.
+      - name: Capture commit du monorepo
+        id: meta
+        run: |
+          {
+            echo "commit_sha=$(git -C app rev-parse HEAD)"
+            echo "build_date=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Select Xcode 26.x
         run: |
@@ -84,11 +101,13 @@ jobs:
       # doit dépasser le dernier uploadé sur TestFlight (322 au moment du setup).
       # github.run_number repart à 1 pour ce workflow -> OFFSET 400 = 1er build 401.
       - name: Compute build number
+        id: bn
         env:
           OFFSET: "400"
         run: |
           BN=$(( ${{ github.run_number }} + OFFSET ))
           echo "BUILD_NUMBER=$BN" >> "$GITHUB_ENV"
+          echo "build_number=$BN" >> "$GITHUB_OUTPUT"
 
       # Cible le app.json de l'app Expo dans le monorepo.
       - name: Inject build number
@@ -199,6 +218,37 @@ jobs:
             --file app/app-store.ipa \
             --apiKey "$ASC_KEY_ID" \
             --apiIssuer "$ASC_ISSUER_ID"
+
+      # Le script d'annotation vit dans CE repo (public) : checkout sans token,
+      # dans ci/ pour ne pas toucher au monorepo déjà présent dans app/.
+      - name: Checkout scripts CI
+        if: success()
+        uses: actions/checkout@v4
+        with:
+          path: ci
+
+      # Écrit "Build <n> — commit <sha>" dans le champ "What to Test" du build
+      # TestFlight (betaBuildLocalizations.whatsToTest, API App Store Connect).
+      # But : pouvoir dire « le 603 bugue, pas le 602 » et retrouver la plage de
+      # commits entre les deux, directement depuis TestFlight.
+      # Le script attend l'apparition du build côté Apple (traitement : 2 à 20 min),
+      # régénère son JWT à chaque requête, et ne fait JAMAIS échouer le job : le
+      # binaire est déjà livré, seule l'annotation peut manquer (warning).
+      - name: Annoter le build TestFlight (commit)
+        if: success()
+        env:
+          ASC_ISSUER_ID: ${{ secrets.APPSTORE_ISSUER_ID }}
+          ASC_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
+          ASC_PRIVATE_KEY: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
+          ASC_BUNDLE_ID: ${{ secrets.IOS_BUNDLE_ID || 'com.meschasses' }}
+          BUILD_NUMBER: ${{ steps.bn.outputs.build_number }}
+          COMMIT_SHA: ${{ steps.meta.outputs.commit_sha }}
+          COMMIT_REF: ${{ github.ref }}
+          BUILD_DATE: ${{ steps.meta.outputs.build_date }}
+          RELEASE_NOTES: ${{ inputs.release_notes }}
+          TESTFLIGHT_LOCALES: "fr-FR,en-US"
+          POLL_TIMEOUT_SEC: "1200"
+        run: node ci/.github/scripts/set-testflight-whats-to-test.mjs
 
       # Rien n'est conservé : ni artifact (aucun upload-artifact dans ce workflow),
       # ni binaire, ni clé. Le .ipa signé ne va QUE vers App Store Connect.

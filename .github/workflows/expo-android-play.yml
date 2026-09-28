@@ -7,6 +7,10 @@ on:
         description: "Note interne"
         required: false
         default: ""
+      monorepo_ref:
+        description: "Branche (ou tag/SHA) du monorepo à construire — vide = branche par défaut"
+        required: false
+        default: ""
   push:
     tags:
       - "play-v*"
@@ -34,6 +38,9 @@ jobs:
           repository: ${{ secrets.MONOREPO_REPO }}
           token: ${{ secrets.CI_PAT_TOKEN }}
           path: app
+          # Vide (push de tag, ou champ laissé vide) = branche par défaut du monorepo.
+          # Passé via `with:` (jamais interpolé dans un `run:`) : pas d'injection shell.
+          ref: ${{ inputs.monorepo_ref }}
 
       # pnpm DOIT être installé avant setup-node pour que cache: pnpm fonctionne.
       - name: Setup pnpm

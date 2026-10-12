@@ -1,7 +1,8 @@
 name: Mise en production
 
 # UN clic (ou un dispatch API) = mise en production iOS + Android de la version
-# courante du monorepo (branche par défaut). Lance les deux workflows de build
+# courante du monorepo (branche par défaut, ou un commit précis déjà intégré
+# à celle-ci : input `commit`, ex. le commit exact d'un build de test vérifié). Lance les deux workflows de build
 # en destination=production, attend leur fin et échoue si l'un échoue : le
 # déclencheur reçoit alors l'email d'échec GitHub (les runs lancés par ce
 # workflow ont pour acteur le bot, qui ne reçoit rien).
@@ -16,6 +17,11 @@ name: Mise en production
 
 on:
   workflow_dispatch:
+    inputs:
+      commit:
+        description: "SHA complet (40 car.) d'un commit déjà sur la branche par défaut — vide = dernier commit"
+        required: false
+        default: ""
 
 permissions: {}
 
@@ -33,14 +39,17 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
       REF: ${{ github.ref_name }}
+      # Passé par env (jamais interpolé dans le script) ; validé par le contrôle
+      # « mise en production » de chaque workflow (SHA complet intégré à la branche).
+      COMMIT: ${{ inputs.commit }}
     steps:
       - name: Lancer iOS et Android, attendre la fin
         run: |
           set -euo pipefail
           since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-          gh workflow run expo-ios-testflight.yml --ref "$REF" -f destination=production
-          gh workflow run expo-android-play.yml --ref "$REF" -f destination=production
+          gh workflow run expo-ios-testflight.yml --ref "$REF" -f destination=production -f monorepo_ref="$COMMIT"
+          gh workflow run expo-android-play.yml --ref "$REF" -f destination=production -f monorepo_ref="$COMMIT"
 
           # Retrouve le run créé par ce dispatch (premier run workflow_dispatch
           # créé après `since`).

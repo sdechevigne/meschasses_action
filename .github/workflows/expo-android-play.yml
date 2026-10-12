@@ -59,13 +59,16 @@ jobs:
         with:
           path: ci
 
-      # PRODUCTION : contrôles AVANT toute minute de build (branche par défaut,
+      # PRODUCTION : contrôles AVANT toute minute de build (branche par défaut ou
+      # commit précis déjà intégré à celle-ci,
       # nouveautés présentes et ≤ 500 caractères, version > version en ligne,
       # accès Google Play et langues de la fiche couvertes).
       - name: Contrôles mise en production
         if: inputs.destination == 'production'
         env:
           MONOREPO_REF: ${{ inputs.monorepo_ref }}
+          MONOREPO_REPO: ${{ secrets.MONOREPO_REPO }}
+          MONOREPO_TOKEN: ${{ secrets.CI_PAT_TOKEN }}
           GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
           CHECK_ONLY: "1"
         run: |

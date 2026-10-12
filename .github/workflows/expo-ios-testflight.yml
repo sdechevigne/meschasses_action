@@ -11,6 +11,11 @@ on:
         description: "Branche (ou tag/SHA) du monorepo à construire — vide = branche par défaut"
         required: false
         default: ""
+      destination:
+        description: "test = TestFlight seul ; production = soumission App Store + publication auto après validation"
+        type: choice
+        options: [test, production]
+        default: test
   push:
     tags:
       - "tf-v*"
@@ -19,14 +24,16 @@ on:
 # monorepo passe par CI_PAT_TOKEN). On lui retire donc TOUT droit sur ce repo.
 permissions: {}
 
+# Un build de test ne doit jamais annuler une mise en production en cours
+# (groupes séparés), et une mise en production n'est jamais annulée en vol.
 concurrency:
-  group: expo-ios-testflight
-  cancel-in-progress: true
+  group: expo-ios-testflight-${{ inputs.destination || 'test' }}
+  cancel-in-progress: ${{ inputs.destination != 'production' }}
 
 jobs:
   build-and-deploy:
     runs-on: macos-15
-    timeout-minutes: 90
+    timeout-minutes: 150
     environment: production
     # Lecture de CE repo (public) uniquement, pour le script d'annotation
     # TestFlight. Le monorepo continue de passer par CI_PAT_TOKEN.
@@ -58,6 +65,29 @@ jobs:
             echo "commit_sha=$(git -C app rev-parse HEAD)"
             echo "build_date=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
           } >> "$GITHUB_OUTPUT"
+
+      # Scripts CI de CE repo (public) : checkout sans token, dans ci/ pour ne
+      # pas toucher au monorepo déjà présent dans app/.
+      - name: Checkout scripts CI
+        uses: actions/checkout@v4
+        with:
+          path: ci
+
+      # PRODUCTION : contrôles AVANT toute minute de build (branche par défaut,
+      # nouveautés présentes et ≤ 500 caractères, version > version en ligne,
+      # aucune version déjà en cours chez Apple, locales couvertes).
+      - name: Contrôles mise en production
+        if: inputs.destination == 'production'
+        env:
+          MONOREPO_REF: ${{ inputs.monorepo_ref }}
+          ASC_ISSUER_ID: ${{ secrets.APPSTORE_ISSUER_ID }}
+          ASC_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
+          ASC_PRIVATE_KEY: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
+          ASC_BUNDLE_ID: ${{ secrets.IOS_BUNDLE_ID || 'com.meschasses' }}
+          CHECK_ONLY: "1"
+        run: |
+          node ci/.github/scripts/verifier-mise-en-prod.mjs
+          node ci/.github/scripts/publish-app-store.mjs
 
       - name: Select Xcode 26.x
         run: |
@@ -226,14 +256,6 @@ jobs:
             --apiKey "$ASC_KEY_ID" \
             --apiIssuer "$ASC_ISSUER_ID"
 
-      # Le script d'annotation vit dans CE repo (public) : checkout sans token,
-      # dans ci/ pour ne pas toucher au monorepo déjà présent dans app/.
-      - name: Checkout scripts CI
-        if: success()
-        uses: actions/checkout@v4
-        with:
-          path: ci
-
       # Écrit "Build <n> — commit <sha>" dans le champ "What to Test" du build
       # TestFlight (betaBuildLocalizations.whatsToTest, API App Store Connect).
       # But : pouvoir dire « le 603 bugue, pas le 602 » et retrouver la plage de
@@ -256,6 +278,20 @@ jobs:
           TESTFLIGHT_LOCALES: "fr-FR,en-US"
           POLL_TIMEOUT_SEC: "1200"
         run: node ci/.github/scripts/set-testflight-whats-to-test.mjs
+
+      # PRODUCTION : attend le traitement Apple du build, remplit les nouveautés
+      # (store/nouveautes/<version>/ du monorepo), rattache le build et soumet à
+      # la validation, avec publication AUTOMATIQUE à 100 % après acceptation.
+      - name: Soumettre à l'App Store
+        if: success() && inputs.destination == 'production'
+        env:
+          ASC_ISSUER_ID: ${{ secrets.APPSTORE_ISSUER_ID }}
+          ASC_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
+          ASC_PRIVATE_KEY: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
+          ASC_BUNDLE_ID: ${{ secrets.IOS_BUNDLE_ID || 'com.meschasses' }}
+          BUILD_NUMBER: ${{ steps.bn.outputs.build_number }}
+          POLL_TIMEOUT_SEC: "2700"
+        run: node ci/.github/scripts/publish-app-store.mjs
 
       # Rien n'est conservé : ni artifact (aucun upload-artifact dans ce workflow),
       # ni binaire, ni clé. Le .ipa signé ne va QUE vers App Store Connect.

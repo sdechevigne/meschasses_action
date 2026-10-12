@@ -1,0 +1,67 @@
+name: Mise en production
+
+# UN clic (ou un dispatch API) = mise en production iOS + Android de la version
+# courante du monorepo (branche par défaut). Lance les deux workflows de build
+# en destination=production, attend leur fin et échoue si l'un échoue : le
+# déclencheur reçoit alors l'email d'échec GitHub (les runs lancés par ce
+# workflow ont pour acteur le bot, qui ne reçoit rien).
+#
+# Pré-requis côté monorepo : expo.version montée dans apps/mobile/app.json et
+# nouveautés écrites dans apps/mobile/store/nouveautes/<version>/{fr,en}.txt.
+# Les deux workflows le vérifient AVANT de construire.
+#
+# Les numéros de build restent calculés par chaque workflow (son run_number +
+# OFFSET) : c'est pourquoi on les DÉCLENCHE au lieu de les appeler en
+# workflow réutilisable (qui hériterait du run_number de ce workflow).
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: mise-en-production
+  cancel-in-progress: false
+
+jobs:
+  publier:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      REF: ${{ github.ref_name }}
+    steps:
+      - name: Lancer iOS et Android, attendre la fin
+        run: |
+          set -euo pipefail
+          since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+          gh workflow run expo-ios-testflight.yml --ref "$REF" -f destination=production
+          gh workflow run expo-android-play.yml --ref "$REF" -f destination=production
+
+          # Retrouve le run créé par ce dispatch (premier run workflow_dispatch
+          # créé après `since`).
+          find_run() {
+            for _ in $(seq 1 30); do
+              id=$(gh run list --workflow "$1" --event workflow_dispatch --limit 10 \
+                     --json databaseId,createdAt \
+                     --jq "[.[] | select(.createdAt >= \"$since\")] | sort_by(.createdAt) | .[0].databaseId // empty")
+              [ -n "$id" ] && { echo "$id"; return 0; }
+              sleep 10
+            done
+            echo "::error::Run $1 introuvable après dispatch" >&2
+            return 1
+          }
+          ios=$(find_run expo-ios-testflight.yml)
+          android=$(find_run expo-android-play.yml)
+          echo "iOS     : https://github.com/$GH_REPO/actions/runs/$ios"
+          echo "Android : https://github.com/$GH_REPO/actions/runs/$android"
+
+          status=0
+          gh run watch "$ios" --interval 60 --exit-status > /dev/null || { echo "::error::iOS en échec : https://github.com/$GH_REPO/actions/runs/$ios"; status=1; }
+          gh run watch "$android" --interval 60 --exit-status > /dev/null || { echo "::error::Android en échec : https://github.com/$GH_REPO/actions/runs/$android"; status=1; }
+          [ "$status" -eq 0 ] && echo "✅ Version soumise à Apple et envoyée en production sur Google Play."
+          exit "$status"

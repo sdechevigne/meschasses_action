@@ -25,7 +25,7 @@
 //   TESTFLIGHT_LOCALES  - locales à créer si le build n'en a aucune (défaut fr-FR,en-US)
 //   POLL_TIMEOUT_SEC    - attente max de l'apparition du build côté Apple (défaut 1200)
 
-import crypto from 'node:crypto';
+import { createAscClient, sleep } from './lib/asc.mjs';
 
 const ISSUER = process.env.ASC_ISSUER_ID;
 const KID = process.env.ASC_KEY_ID;
@@ -54,42 +54,12 @@ for (const k of ['ASC_ISSUER_ID', 'ASC_KEY_ID', 'ASC_PRIVATE_KEY', 'ASC_BUNDLE_I
   if (!process.env[k]) fail(`Variable ${k} manquante`);
 }
 
-// Normalise la clé privée : accepte le PEM complet ou le seul corps base64.
-let pem = process.env.ASC_PRIVATE_KEY.trim();
-if (!pem.includes('BEGIN')) {
-  pem = `-----BEGIN PRIVATE KEY-----\n${pem.replace(/(.{64})/g, '$1\n')}\n-----END PRIVATE KEY-----`;
-}
-
-const b64url = (buf) =>
-  Buffer.from(buf).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-
-function makeJWT() {
-  const header = { alg: 'ES256', kid: KID, typ: 'JWT' };
-  const now = Math.floor(Date.now() / 1000);
-  const payload = { iss: ISSUER, iat: now, exp: now + 1200, aud: 'appstoreconnect-v1' };
-  const input = `${b64url(JSON.stringify(header))}.${b64url(JSON.stringify(payload))}`;
-  const sig = crypto.sign('SHA256', Buffer.from(input), { key: pem, dsaEncoding: 'ieee-p1363' });
-  return `${input}.${b64url(sig)}`;
-}
-
-const BASE = 'https://api.appstoreconnect.apple.com/v1';
-
-async function api(path, opts = {}) {
-  const res = await fetch(`${BASE}${path}`, {
-    ...opts,
-    headers: {
-      // Regénéré à chaque appel : jamais expiré, même après 20 min de poll.
-      Authorization: `Bearer ${makeJWT()}`,
-      'Content-Type': 'application/json',
-      ...(opts.headers || {}),
-    },
-  });
-  const text = await res.text();
-  if (!res.ok) throw new Error(`${opts.method || 'GET'} ${path} → ${res.status}: ${text}`);
-  return text ? JSON.parse(text) : {};
-}
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// Client App Store Connect partagé (JWT régénéré à chaque requête).
+const api = createAscClient({
+  issuerId: ISSUER,
+  keyId: KID,
+  privateKey: process.env.ASC_PRIVATE_KEY,
+});
 
 // --- Texte poussé dans "What to Test" ----------------------------------------
 // Visible par les testeurs TestFlight : on y met le strict nécessaire au triage

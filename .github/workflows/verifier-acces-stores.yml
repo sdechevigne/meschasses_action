@@ -1,0 +1,66 @@
+name: Vérifier l'accès aux stores
+
+# LECTURE SEULE : rien n'est construit ni publié. Vérifie les clés App Store
+# Connect et Google Play, liste les langues des fiches, l'état des versions
+# App Store et de la piste production Google Play, et la présence des
+# nouveautés de la version courante du monorepo. À lancer en cas de doute
+# avant une mise en production.
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  verifier:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout monorepo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ secrets.MONOREPO_REPO }}
+          token: ${{ secrets.CI_PAT_TOKEN }}
+          path: app
+          sparse-checkout: apps/mobile
+
+      - name: Checkout scripts CI
+        uses: actions/checkout@v4
+        with:
+          path: ci
+
+      - name: App Store Connect
+        id: ios
+        continue-on-error: true
+        env:
+          ASC_ISSUER_ID: ${{ secrets.APPSTORE_ISSUER_ID }}
+          ASC_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
+          ASC_PRIVATE_KEY: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
+          ASC_BUNDLE_ID: ${{ secrets.IOS_BUNDLE_ID || 'com.meschasses' }}
+          CHECK_ONLY: "1"
+        run: node ci/.github/scripts/publish-app-store.mjs
+
+      - name: Google Play
+        id: android
+        continue-on-error: true
+        env:
+          GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
+          CHECK_ONLY: "1"
+        run: node ci/.github/scripts/publish-google-play.mjs
+
+      - name: Version et nouveautés
+        id: version
+        continue-on-error: true
+        run: node ci/.github/scripts/verifier-mise-en-prod.mjs
+
+      - name: Bilan
+        env:
+          IOS: ${{ steps.ios.outcome }}
+          ANDROID: ${{ steps.android.outcome }}
+          VERSION: ${{ steps.version.outcome }}
+        run: |
+          echo "App Store : $IOS · Google Play : $ANDROID · Version/nouveautés : $VERSION"
+          [ "$IOS" = success ] && [ "$ANDROID" = success ] && [ "$VERSION" = success ]

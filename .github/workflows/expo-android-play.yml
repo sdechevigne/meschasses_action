@@ -11,6 +11,11 @@ on:
         description: "Branche (ou tag/SHA) du monorepo à construire — vide = branche par défaut"
         required: false
         default: ""
+      destination:
+        description: "test = piste interne ; production = production à 100 % avec nouveautés"
+        type: choice
+        options: [test, production]
+        default: test
   push:
     tags:
       - "play-v*"
@@ -19,15 +24,21 @@ on:
 # monorepo passe par CI_PAT_TOKEN). On lui retire donc TOUT droit sur ce repo.
 permissions: {}
 
+# Un build de test ne doit jamais annuler une mise en production en cours
+# (groupes séparés), et une mise en production n'est jamais annulée en vol.
 concurrency:
-  group: expo-android-play
-  cancel-in-progress: true
+  group: expo-android-play-${{ inputs.destination || 'test' }}
+  cancel-in-progress: ${{ inputs.destination != 'production' }}
 
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     environment: production
+    # Lecture de CE repo (public) uniquement, pour les scripts de publication.
+    # Le monorepo continue de passer par CI_PAT_TOKEN.
+    permissions:
+      contents: read
 
     steps:
       # Checkout du monorepo (pnpm/Turborepo) via un PAT dédié.
@@ -41,6 +52,25 @@ jobs:
           # Vide (push de tag, ou champ laissé vide) = branche par défaut du monorepo.
           # Passé via `with:` (jamais interpolé dans un `run:`) : pas d'injection shell.
           ref: ${{ inputs.monorepo_ref }}
+
+      # Scripts CI de CE repo (public) : checkout sans token, dans ci/.
+      - name: Checkout scripts CI
+        uses: actions/checkout@v4
+        with:
+          path: ci
+
+      # PRODUCTION : contrôles AVANT toute minute de build (branche par défaut,
+      # nouveautés présentes et ≤ 500 caractères, version > version en ligne,
+      # accès Google Play et langues de la fiche couvertes).
+      - name: Contrôles mise en production
+        if: inputs.destination == 'production'
+        env:
+          MONOREPO_REF: ${{ inputs.monorepo_ref }}
+          GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
+          CHECK_ONLY: "1"
+        run: |
+          node ci/.github/scripts/verifier-mise-en-prod.mjs
+          node ci/.github/scripts/publish-google-play.mjs
 
       # pnpm DOIT être installé avant setup-node pour que cache: pnpm fonctionne.
       - name: Setup pnpm
@@ -231,8 +261,9 @@ jobs:
             --non-interactive \
             --output ../../app-release.aab
 
-      # eas submit lit le track (internal) et le serviceAccountKeyPath depuis eas.json.
+      # TEST : eas submit lit le track (internal) et le serviceAccountKeyPath depuis eas.json.
       - name: Submit to Play (internal)
+        if: inputs.destination != 'production'
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         run: |
@@ -242,6 +273,15 @@ jobs:
             --profile production \
             --path ../../app-release.aab \
             --non-interactive
+
+      # PRODUCTION : piste production à 100 % avec les nouveautés de la version
+      # (eas submit ne sait pas écrire les notes de version).
+      - name: Publier en production (Google Play)
+        if: inputs.destination == 'production'
+        env:
+          GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
+          AAB_PATH: app/app-release.aab
+        run: node ci/.github/scripts/publish-google-play.mjs
 
       # Aucun artifact n'est conservé : l'.aab ne va QUE vers Play (internal).
       # On efface le binaire, la clé service account ET le keystore d'upload

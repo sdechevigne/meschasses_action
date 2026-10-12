@@ -22,7 +22,7 @@ export function readNouveautes(rootDir, version) {
   const dir = join(rootDir, version);
   if (!existsSync(dir)) {
     throw new Error(
-      `Nouveautés absentes pour la version ${version} : créer ${dir}/fr.txt et en.txt dans le monorepo.`
+      `Nouveautés absentes pour la version ${version} : créer ${dir}/fr.txt dans le monorepo (+ en.txt si une fiche store est en anglais).`
     );
   }
   const notes = {};

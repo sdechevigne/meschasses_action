@@ -43,10 +43,12 @@ jobs:
           path: app
           ref: ${{ inputs.monorepo_ref }}
 
-      - name: Select Xcode 27.1
+      # Le runtime iOS 27.1 (absent de l'image) est requis pour compiler vers le simulateur 27.1.
+      - name: Select Xcode 27.1 + runtime iOS 27.1
         run: |
           sudo xcode-select -s /Applications/Xcode_27.1.app/Contents/Developer
           xcodebuild -version
+          xcrun simctl list runtimes | grep -q "iOS 27.1" || xcodebuild -downloadPlatform iOS -buildVersion 27.1 2>&1 | tail -1
           echo "Build : $(xcodebuild -version | tr '\n' ' ') — commit $(git -C app rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Setup pnpm
@@ -79,6 +81,8 @@ jobs:
           EXPO_PUBLIC_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
           EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_KEY }}
           SENTRY_DISABLE_AUTO_UPLOAD: "true"
+          EAS_LOCAL_BUILD_WORKINGDIR: ${{ runner.temp }}/eas-build
+          EAS_LOCAL_BUILD_SKIP_CLEANUP: "1"
         run: |
           cd app/apps/mobile
           eas build --platform ios --profile captures --local --non-interactive --output ../../simulateur.tar.gz
@@ -88,6 +92,14 @@ jobs:
           # SDK réellement utilisé (doit être iphonesimulator27.1).
           /usr/libexec/PlistBuddy -c 'Print :DTSDKName' "$APP/Info.plist" | tee -a "$GITHUB_STEP_SUMMARY"
           tar -czf ../../app-simulateur.tgz -C "$(dirname "$APP")" "$(basename "$APP")"
+
+      # En cas d'échec : vraies erreurs du journal Xcode (le résumé d'EAS n'affiche que des avertissements).
+      - name: Erreurs Xcode
+        if: failure()
+        run: |
+          find "$RUNNER_TEMP/eas-build" -name "*.log" -size +1k 2>/dev/null | while read -r f; do
+            echo "=== $f"; grep -n -E "error:|\*\* BUILD FAILED|fatal error" "$f" | grep -v "deployment target" | head -40
+          done
 
       # Binaire simulateur non signé, rien de secret (clé Supabase « anon » publique par nature).
       - name: Artifact app simulateur

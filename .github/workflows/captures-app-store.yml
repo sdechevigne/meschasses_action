@@ -1,7 +1,7 @@
 name: Captures App Store
 
-# Captures d'écran de l'app iOS sur simulateurs (grand iPhone, iPad 13 pouces, iPhone Duo
-# si l'Xcode du runner le propose), avec le compte de démonstration (données fictives).
+# Captures d'écran de l'app iOS sur simulateurs (grand iPhone, iPad 13 pouces ; l'iPhone Duo
+# a son propre workflow, captures-iphone-duo.yml), avec le compte de démonstration (données fictives).
 # Le parcours et le script vivent dans le monorepo :
 #   apps/mobile/store/creative-assets/captures/ (run.sh, parcours.yaml, ecran.yaml)
 # Les images brutes sortent en artifact (3 jours) ; la mise en forme et l'envoi à
@@ -15,13 +15,13 @@ on:
         required: false
         default: ""
       runner:
-        description: "Image macOS des simulateurs (xcode-27 = iPhone Duo)"
+        description: "Image macOS des simulateurs"
         required: false
-        default: "xcode-27"
+        default: "macos-26"
       xcode_simulateurs:
-        description: "Version d'Xcode des simulateurs (27.1 = iPhone Duo)"
+        description: "Version d'Xcode des simulateurs"
         required: false
-        default: "27.1"
+        default: "26.6"
       appareils:
         description: "Motifs de simulateurs séparés par « ; » (vide = défaut du script)"
         required: false
@@ -50,7 +50,7 @@ jobs:
           path: app
           ref: ${{ inputs.monorepo_ref }}
 
-      # Inventaire Xcode / simulateurs : dit si l'iPhone Duo est disponible sur cette image.
+      # Inventaire des Xcode installés (journal du run).
       - name: Xcode disponibles
         run: |
           {
@@ -149,7 +149,7 @@ jobs:
         with:
           node-version: 22
 
-      # Simulateurs : l'Xcode le plus récent (iPhone Duo à partir de 27.1). Un .app compilé
+      # Simulateurs : Xcode choisi en entrée (défaut 26.6). Un .app compilé
       # avec le SDK 26 tourne sur un runtime plus récent.
       - name: Select Xcode (simulateurs)
         env:
@@ -164,7 +164,7 @@ jobs:
           sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
           xcodebuild -version
           echo "Xcode simulateurs : $(xcodebuild -version | head -1)" >> "$GITHUB_STEP_SUMMARY"
-          # Runtime iOS de cet Xcode (l'iPhone Duo demande iOS 27.1) : téléchargé s'il manque.
+          # Runtime iOS de cet Xcode : téléchargé s'il manque.
           SDK=$(xcrun --sdk iphonesimulator --show-sdk-version)
           if ! xcrun simctl list runtimes | grep -q "iOS $SDK"; then
             echo "Téléchargement du runtime iOS $SDK"
@@ -188,6 +188,7 @@ jobs:
           SORTIE: ${{ github.workspace }}/captures
           APPAREILS: ${{ inputs.appareils }}
           MAESTRO_CLI_NO_ANALYTICS: "1"
+          MAESTRO_DRIVER_STARTUP_TIMEOUT: "300000"
         run: |
           echo "::add-mask::$DEMO_PASSWORD"
           [ -n "$APPAREILS" ] || unset APPAREILS

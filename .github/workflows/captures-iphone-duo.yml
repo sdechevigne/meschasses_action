@@ -14,9 +14,13 @@ on:
         required: false
         default: ""
       app_run_id:
-        description: "Réutiliser l'app simulateur d'un run précédent de ce workflow (id), vide = recompiler"
+        description: "Réutiliser l'app simulateur d'un run précédent (id), vide = recompiler"
         required: false
         default: ""
+      app_artifact:
+        description: "Nom de l'artifact de l'app à réutiliser (app-simulateur = build Xcode 26 de captures-app-store)"
+        required: false
+        default: "app-simulateur-duo"
 
 # Repo PUBLIC : le GITHUB_TOKEN ne sert qu'aux artifacts.
 permissions:
@@ -131,7 +135,7 @@ jobs:
       - name: Récupérer l'app simulateur
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: app-simulateur-duo
+          name: ${{ inputs.app_artifact || 'app-simulateur-duo' }}
           path: .
           run-id: ${{ inputs.app_run_id || github.run_id }}
           github-token: ${{ github.token }}

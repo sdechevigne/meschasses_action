@@ -97,9 +97,12 @@ jobs:
       - name: Erreurs Xcode
         if: failure()
         run: |
-          find "$RUNNER_TEMP/eas-build" -name "*.log" -size +1k 2>/dev/null | while read -r f; do
-            echo "=== $f"; grep -n -E "error:|\*\* BUILD FAILED|fatal error" "$f" | grep -v "deployment target" | head -40
+          for X in $(find "${TMPDIR:-/tmp}" /var/folders -maxdepth 4 -name "result-bundle-*.xcresult" 2>/dev/null | head -2); do
+            echo "=== $X"; xcrun xcresulttool get build-results --path "$X" 2>&1 | head -120
           done
+          L="$RUNNER_TEMP/eas-build/logs/MesChasses-MesChasses.log"
+          [ -f "$L" ] && { grep -n -i -E "error|failed" "$L" | grep -v -E "deployment target|-Werror|error_handler|errorhandler|jserror" | head -60; echo "=== fin"; tail -40 "$L"; }
+          true
 
       # Binaire simulateur non signé, rien de secret (clé Supabase « anon » publique par nature).
       - name: Artifact app simulateur

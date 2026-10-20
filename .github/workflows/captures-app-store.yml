@@ -14,6 +14,10 @@ on:
         description: "SHA complet ou branche du monorepo (vide = branche par défaut)"
         required: false
         default: ""
+      app_run_id:
+        description: "Réutiliser l'app simulateur d'un run précédent (id du run, < 24 h) au lieu de recompiler"
+        required: false
+        default: ""
       runner:
         description: "Image macOS des simulateurs"
         required: false
@@ -38,6 +42,7 @@ concurrency:
 jobs:
   # Compilation sur l'image de production (Xcode 26.x, même chaîne que TestFlight).
   build:
+    if: inputs.app_run_id == ''
     runs-on: macos-26
     timeout-minutes: 90
     environment: production
@@ -126,7 +131,11 @@ jobs:
 
   captures:
     needs: build
+    if: ${{ !cancelled() && (needs.build.result == 'success' || needs.build.result == 'skipped') }}
     runs-on: ${{ inputs.runner }}
+    permissions:
+      contents: read
+      actions: read
     timeout-minutes: 90
     environment: production
     steps:
@@ -143,6 +152,8 @@ jobs:
         with:
           name: app-simulateur
           path: .
+          run-id: ${{ inputs.app_run_id || github.run_id }}
+          github-token: ${{ github.token }}
 
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0

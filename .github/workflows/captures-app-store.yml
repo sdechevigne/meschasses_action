@@ -213,7 +213,10 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: captures-app-store
-          path: captures/**/*.png
+          path: |
+            captures/**/*.png
+            captures/**/*.ips
+            captures/**/*.txt
           retention-days: 3
           if-no-files-found: warn
 

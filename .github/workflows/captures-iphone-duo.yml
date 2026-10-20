@@ -1,0 +1,162 @@
+name: Captures App Store iPhone Duo
+
+# Captures iPhone Duo (écran extérieur + écran intérieur, portrait + paysage) avec le compte de
+# démonstration (données fictives). Seule l'image GitHub `xcode-27` (préversion) a Xcode 27.1, donc
+# le simulateur iPhone Duo et le SDK iOS 27.1. Le parcours vit dans le monorepo :
+#   apps/mobile/store/creative-assets/captures-duo/ (run.sh, connexion.yaml)
+# Les images brutes sortent en artifact (3 jours) ; rien n'est envoyé à App Store Connect ici.
+
+on:
+  workflow_dispatch:
+    inputs:
+      monorepo_ref:
+        description: "SHA complet ou branche du monorepo (vide = branche par défaut)"
+        required: false
+        default: ""
+      app_run_id:
+        description: "Réutiliser l'app simulateur d'un run précédent de ce workflow (id), vide = recompiler"
+        required: false
+        default: ""
+
+# Repo PUBLIC : le GITHUB_TOKEN ne sert qu'aux artifacts.
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: captures-iphone-duo
+  cancel-in-progress: true
+
+jobs:
+  # Compilation avec le SDK iOS 27.1 : c'est lui qui rend l'app « native » sur l'iPhone Duo.
+  build:
+    if: inputs.app_run_id == ''
+    runs-on: xcode-27
+    timeout-minutes: 90
+    environment: production
+    steps:
+      - name: Checkout monorepo
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: ${{ secrets.MONOREPO_REPO }}
+          token: ${{ secrets.CI_PAT_TOKEN }}
+          path: app
+          ref: ${{ inputs.monorepo_ref }}
+
+      - name: Select Xcode 27.1
+        run: |
+          sudo xcode-select -s /Applications/Xcode_27.1.app/Contents/Developer
+          xcodebuild -version
+          echo "Build : $(xcodebuild -version | tr '\n' ' ') — commit $(git -C app rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 9
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: app/pnpm-lock.yaml
+
+      - name: Setup EAS CLI
+        uses: expo/expo-github-action@c7b66a9c327a43a8fa7c0158e7f30d6040d2481e # v8.2.1
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Install dependencies
+        run: cd app && pnpm install --frozen-lockfile
+
+      # Profil `captures` : simulateur, Release, aucune signature, aucun envoi Sentry.
+      - name: Build simulateur
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          EAS_BUILD_NO_EXPO_GO_WARNING: "true"
+          EXPO_NO_CAPABILITY_SYNC: "1"
+          EXPO_PUBLIC_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_KEY }}
+          SENTRY_DISABLE_AUTO_UPLOAD: "true"
+        run: |
+          cd app/apps/mobile
+          eas build --platform ios --profile captures --local --non-interactive --output ../../simulateur.tar.gz
+          mkdir -p ../../simulateur && tar -xzf ../../simulateur.tar.gz -C ../../simulateur
+          APP=$(find ../../simulateur -maxdepth 3 -name '*.app' | head -1)
+          [ -n "$APP" ] || { echo "::error::.app introuvable dans l'archive"; exit 1; }
+          # SDK réellement utilisé (doit être iphonesimulator27.1).
+          /usr/libexec/PlistBuddy -c 'Print :DTSDKName' "$APP/Info.plist" | tee -a "$GITHUB_STEP_SUMMARY"
+          tar -czf ../../app-simulateur.tgz -C "$(dirname "$APP")" "$(basename "$APP")"
+
+      # Binaire simulateur non signé, rien de secret (clé Supabase « anon » publique par nature).
+      - name: Artifact app simulateur
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: app-simulateur-duo
+          path: app/app-simulateur.tgz
+          retention-days: 3
+
+  captures:
+    needs: build
+    if: always() && (needs.build.result == 'success' || inputs.app_run_id != '')
+    runs-on: xcode-27
+    timeout-minutes: 60
+    environment: production
+    steps:
+      - name: Checkout monorepo
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: ${{ secrets.MONOREPO_REPO }}
+          token: ${{ secrets.CI_PAT_TOKEN }}
+          path: app
+          ref: ${{ inputs.monorepo_ref }}
+
+      - name: Récupérer l'app simulateur
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: app-simulateur-duo
+          path: .
+          run-id: ${{ inputs.app_run_id || github.run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+
+      - name: Xcode 27.1 + runtime iOS 27.1
+        run: |
+          sudo xcode-select -s /Applications/Xcode_27.1.app/Contents/Developer
+          xcrun simctl list runtimes | grep -q "iOS 27.1" || xcodebuild -downloadPlatform iOS -buildVersion 27.1 2>&1 | tail -1
+          xcrun simctl list runtimes
+
+      - name: Outils (Maestro, cliclick)
+        run: |
+          curl -fsSL "https://get.maestro.mobile.dev" | bash >/dev/null
+          echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
+          brew install cliclick >/dev/null
+
+      - name: Captures
+        env:
+          DEMO_EMAIL: demo@meschasses.com
+          DEMO_PASSWORD: ${{ secrets.DEMO_PASSWORD }}
+          SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_KEY }}
+          SORTIE: ${{ github.workspace }}/captures
+          MAESTRO_CLI_NO_ANALYTICS: "1"
+          MAESTRO_DRIVER_STARTUP_TIMEOUT: "300000"
+        run: |
+          echo "::add-mask::$DEMO_PASSWORD"
+          mkdir -p simulateur && tar -xzf app-simulateur.tgz -C simulateur
+          export APP_PATH="$(find "$GITHUB_WORKSPACE/simulateur" -maxdepth 1 -name '*.app' | head -1)"
+          bash app/apps/mobile/store/creative-assets/captures-duo/run.sh
+
+      # Images seules (pas les journaux Maestro, qui contiennent les saisies).
+      - name: Artifact captures
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: captures-iphone-duo
+          path: captures/**/*.png
+          retention-days: 3

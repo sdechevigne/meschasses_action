@@ -198,6 +198,13 @@ jobs:
             --non-interactive \
             --output ../../app-store.ipa
 
+      # Garde-fou AVANT envoi : toute bibliothèque liée doit être fournie par iOS
+      # ou embarquée dans l'app, sinon plantage au lancement (dyld « Library
+      # missing », avant tout JS). Vécu 4.2.10 (757) : prébuild expo-contacts
+      # 56.0.14 lié à Swift Testing.
+      - name: Contrôle des bibliothèques liées (.ipa)
+        run: bash ci/.github/scripts/verifier-liens-ipa.sh app/app-store.ipa
+
       # Upload DIRECT vers App Store Connect depuis le runner (xcrun altool), sans
       # passer par la file d'attente des submissions EAS (qui ajoutait souvent
       # plusieurs dizaines de minutes au job pour un simple transfert de binaire).

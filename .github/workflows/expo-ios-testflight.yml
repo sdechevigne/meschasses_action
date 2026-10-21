@@ -55,6 +55,7 @@ jobs:
         id: lire
         run: |
           M=$(node -p 'require("./app/apps/mobile/package.json").dependencies.expo.replace(/^[^0-9]*/,"").split(".")[0]')
+          [[ "$M" =~ ^[0-9]+$ ]] || { echo "::error::Version d'Expo illisible dans apps/mobile/package.json ($M)"; exit 1; }
           echo "expo_major=$M" >> "$GITHUB_OUTPUT"
           echo "Expo SDK $M" >> "$GITHUB_STEP_SUMMARY"
 
@@ -237,6 +238,14 @@ jobs:
       # 56.0.14 lié à Swift Testing.
       - name: Contrôle des bibliothèques liées (.ipa)
         run: bash ci/.github/scripts/verifier-liens-ipa.sh app/app-store.ipa
+
+      # Aucun iPhone ne doit perdre l'app : minimum iOS de l'app et de ses frameworks inchangé (16.4).
+      # Le widget (extension) a sa propre version (18.0, inchangée depuis sa création).
+      - name: Contrôle des versions minimales (.ipa)
+        env:
+          MIN_IOS: "16.4"
+          EXTENSIONS_IOS: "MesChassesWidgets.appex=18.0"
+        run: node ci/.github/scripts/verifier-minimums.mjs ios app/app-store.ipa
 
       # Upload DIRECT vers App Store Connect depuis le runner (xcrun altool), sans
       # passer par la file d'attente des submissions EAS (qui ajoutait souvent

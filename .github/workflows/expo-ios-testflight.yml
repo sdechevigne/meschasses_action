@@ -31,8 +31,36 @@ concurrency:
   cancel-in-progress: ${{ inputs.destination != 'production' }}
 
 jobs:
+  # Lit la version d'Expo du commit à construire AVANT de choisir la machine : un SDK ≥ 58 doit être
+  # compilé avec Xcode 27.1 (SDK iOS 27, iPhone Duo) ; un SDK plus ancien plante au lancement s'il l'est
+  # (cycle UIScene exigé par iOS 27). Rien à choisir à la main, aucun mélange possible.
+  socle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: production
+    outputs:
+      expo_major: ${{ steps.lire.outputs.expo_major }}
+    steps:
+      - name: Checkout monorepo (package.json mobile seul)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: ${{ secrets.MONOREPO_REPO }}
+          token: ${{ secrets.CI_PAT_TOKEN }}
+          path: app
+          # Même règle que le job de build : vide = branche par défaut du monorepo.
+          ref: ${{ inputs.monorepo_ref }}
+          sparse-checkout: apps/mobile/package.json
+          sparse-checkout-cone-mode: false
+      - name: Version d'Expo
+        id: lire
+        run: |
+          M=$(node -p 'require("./app/apps/mobile/package.json").dependencies.expo.replace(/^[^0-9]*/,"").split(".")[0]')
+          echo "expo_major=$M" >> "$GITHUB_OUTPUT"
+          echo "Expo SDK $M" >> "$GITHUB_STEP_SUMMARY"
+
   build-and-deploy:
-    runs-on: macos-15
+    needs: socle
+    runs-on: ${{ fromJSON(needs.socle.outputs.expo_major) >= 58 && 'xcode-27' || 'macos-15' }}
     timeout-minutes: 150
     environment: production
     # Lecture de CE repo (public) uniquement, pour le script d'annotation
@@ -92,15 +120,20 @@ jobs:
           node ci/.github/scripts/verifier-mise-en-prod.mjs
           node ci/.github/scripts/publish-app-store.mjs
 
-      - name: Select Xcode 26.x
+      # Expo ≥ 58 → Xcode 27.1 (runner xcode-27) ; sinon dernier Xcode 26 (macos-15).
+      # Le runtime simulateur iOS 27.1 n'est PAS nécessaire pour une archive appareil.
+      - name: Select Xcode
+        env:
+          EXPO_MAJOR: ${{ needs.socle.outputs.expo_major }}
         run: |
-          XCODE_PATH=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
-          if [ -z "$XCODE_PATH" ]; then
-            echo "::error::Xcode 26.x not found on runner"
-            exit 1
+          if [ "$EXPO_MAJOR" -ge 58 ]; then
+            XCODE_PATH=/Applications/Xcode_27.1.app
+          else
+            XCODE_PATH=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
           fi
+          [ -d "$XCODE_PATH" ] || { echo "::error::Xcode introuvable ($XCODE_PATH) pour Expo $EXPO_MAJOR"; exit 1; }
           sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
-          xcodebuild -version
+          xcodebuild -version | tee -a "$GITHUB_STEP_SUMMARY"
 
       # pnpm DOIT être installé avant setup-node pour que cache: pnpm fonctionne.
       - name: Setup pnpm

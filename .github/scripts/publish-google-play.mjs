@@ -1,6 +1,9 @@
-// Publie le .aab en PRODUCTION sur Google Play, à 100 % des utilisateurs
-// (status "completed"), avec les nouveautés de la version. Google l'examine
-// puis la publie automatiquement.
+// Publie le .aab en PRODUCTION sur Google Play, avec les nouveautés de la
+// version. Google l'examine puis la publie automatiquement.
+// Par défaut à 100 % (status "completed") ; PLAY_USER_FRACTION (ex. "0.1")
+// publie EN PALIERS (status "inProgress" : seul ce pourcentage d'utilisateurs
+// reçoit la version). Montée / pause / complétion ensuite : rollout-google-play.mjs
+// (workflow rollout-android.yml).
 //
 // Remplace `eas submit` en mode production : eas submit ne sait pas écrire les
 // notes de version. API Google Play Developer (Publisher v3), via un « edit » :
@@ -27,6 +30,12 @@ import { readFileSync } from 'node:fs';
 import { notesForLocale, readNouveautes } from './lib/nouveautes.mjs';
 
 const CHECK_ONLY = process.env.CHECK_ONLY === '1';
+// Déploiement par paliers : fraction d'utilisateurs servie (0 < f < 1), vide = 100 %.
+const USER_FRACTION = process.env.PLAY_USER_FRACTION ? Number(process.env.PLAY_USER_FRACTION) : null;
+if (USER_FRACTION !== null && !(USER_FRACTION > 0 && USER_FRACTION < 1)) {
+  console.error('::error::PLAY_USER_FRACTION doit être strictement entre 0 et 1 (ex. 0.1).');
+  process.exit(1);
+}
 const PACKAGE = process.env.PLAY_PACKAGE_NAME || 'com.meschasses';
 const AAB_PATH = process.env.AAB_PATH;
 const APP_JSON = process.env.APP_JSON || 'app/apps/mobile/app.json';
@@ -136,16 +145,18 @@ async function main() {
     const versionCode = String(bundle.versionCode);
     console.log(`Bundle accepté : versionCode ${versionCode}.`);
 
+    const release = USER_FRACTION !== null
+      ? { name: `${version} (${versionCode})`, versionCodes: [versionCode], status: 'inProgress', userFraction: USER_FRACTION, releaseNotes }
+      : { name: `${version} (${versionCode})`, versionCodes: [versionCode], status: 'completed', releaseNotes };
     await call(`${edit}/tracks/production`, {
       method: 'PUT',
-      body: JSON.stringify({
-        track: 'production',
-        releases: [{ name: `${version} (${versionCode})`, versionCodes: [versionCode], status: 'completed', releaseNotes }],
-      }),
+      body: JSON.stringify({ track: 'production', releases: [release] }),
     });
     await call(`${edit}:commit`, { method: 'POST' });
     committed = true;
-    console.log(`🎉 Version ${version} (${versionCode}) envoyée en production à 100 % : publication après examen Google.`);
+    console.log(USER_FRACTION !== null
+      ? `🎉 Version ${version} (${versionCode}) envoyée en production PAR PALIERS (${Math.round(USER_FRACTION * 100)} % des utilisateurs) : publication après examen Google. Montée : workflow rollout-android.yml.`
+      : `🎉 Version ${version} (${versionCode}) envoyée en production à 100 % : publication après examen Google.`);
   } finally {
     // Un edit non commité est abandonné proprement (sinon il bloque les suivants).
     if (!committed) await call(edit, { method: 'DELETE' }).catch(() => {});

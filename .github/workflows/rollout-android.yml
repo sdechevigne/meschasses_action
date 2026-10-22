@@ -1,0 +1,44 @@
+# Pilote le déploiement par paliers de la piste production Google Play
+# (release inProgress créée par expo-android-play.yml en mode production avec
+# PLAY_USER_FRACTION). Actions : monter le palier, compléter à 100 %, mettre en pause.
+name: Rollout Android (paliers production)
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "fraction = monter le palier ; complete = publier à 100 % ; halt = pause"
+        type: choice
+        options: [fraction, complete, halt]
+        default: fraction
+      fraction:
+        description: "Palier (0 < f < 1, ex. 0.5) — utilisé seulement si action = fraction"
+        required: false
+        default: "0.5"
+
+permissions: {}
+
+concurrency:
+  group: rollout-android
+  cancel-in-progress: false
+
+jobs:
+  rollout:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout scripts CI
+        uses: actions/checkout@v4
+        with:
+          path: ci
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Piloter la piste production
+        env:
+          GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
+          ACTION: ${{ inputs.action }}
+          PLAY_USER_FRACTION: ${{ inputs.fraction }}
+        run: node ci/.github/scripts/rollout-google-play.mjs

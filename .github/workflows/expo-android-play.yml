@@ -296,6 +296,9 @@ jobs:
         env:
           GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
           AAB_PATH: app/app-release.aab
+          # Déploiement PAR PALIERS (décision 2026-10-22, sortie 5.0.0 en pleine saison) :
+          # 10 % des utilisateurs d'abord ; montée via le workflow rollout-android.yml.
+          PLAY_USER_FRACTION: "0.1"
         run: node ci/.github/scripts/publish-google-play.mjs
 
       # Aucun artifact n'est conservé : l'.aab ne va QUE vers Play (internal).

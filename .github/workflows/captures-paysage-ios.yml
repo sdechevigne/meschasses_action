@@ -1,0 +1,292 @@
+name: Captures paysage iOS
+
+# Revue paysage de l'app iOS : une capture par écran (liste ecrans.txt du monorepo) et par simulateur
+# (iPhone Pro à îlot, plus petit iPhone du runtime, iPad Pro 11"), avec le compte de démonstration
+# (données fictives). Même build `captures` et mêmes secrets que captures-app-store.yml. Le script vit dans
+# le monorepo :
+#   apps/mobile/store/creative-assets/captures-paysage/ (run-ios.sh, ecran-paysage.yaml, preparer.mjs)
+# Artifact `captures-paysage-ios` (suffixe `-portrait` si orientation = portrait) :
+#   <appareil>/<lot>/<nom>.png, plus <appareil>/echecs.txt (captures absentes ou mal orientées).
+# Un job par appareil (en parallèle) : ~95 écrans × 3 appareils dépasseraient le délai d'un seul job.
+# Les images brutes sortent en artifact (3 jours) ; rien n'est envoyé à App Store Connect ici.
+
+on:
+  workflow_dispatch:
+    inputs:
+      monorepo_ref:
+        description: "SHA complet (40 caractères) ou branche du monorepo (vide = branche par défaut)"
+        required: false
+        default: ""
+      lots:
+        description: "Lots à capturer, séparés par « , » (ex. C-carte,B-chasses). Vide = tous"
+        required: false
+        default: ""
+      orientation:
+        description: "Orientation imposée aux captures"
+        required: false
+        type: choice
+        default: paysage
+        options:
+          - paysage
+          - portrait
+      appareils:
+        description: "Appareils à lancer, séparés par « , » (iphone-pro, iphone-petit, ipad-pro-11). Vide = tous"
+        required: false
+        default: ""
+      app_run_id:
+        description: "Réutiliser l'app simulateur d'un run précédent (id du run, < 24 h) au lieu de recompiler"
+        required: false
+        default: ""
+      runner:
+        description: "Image macOS des simulateurs"
+        required: false
+        default: "macos-26"
+      xcode_simulateurs:
+        description: "Version d'Xcode des simulateurs"
+        required: false
+        default: "26.6"
+
+# Repo PUBLIC : le GITHUB_TOKEN ne sert qu'aux artifacts.
+permissions:
+  contents: read
+
+concurrency:
+  group: captures-paysage-ios
+  cancel-in-progress: true
+
+jobs:
+  # Liste des appareils à lancer (filtrée par l'entrée `appareils`).
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrice: ${{ steps.calcul.outputs.matrice }}
+    steps:
+      - name: Matrice des appareils
+        id: calcul
+        env:
+          FILTRE: ${{ inputs.appareils }}
+        run: |
+          node -e '
+            const tous = [
+              { id: "iphone-pro", motif: "^iPhone [0-9]+ Pro$" },
+              { id: "iphone-petit", motif: "^iPhone SE>^iPhone [0-9]+e$>^iPhone [0-9]+ mini$" },
+              { id: "ipad-pro-11", motif: "^iPad Pro 11-inch" },
+            ];
+            const f = (process.env.FILTRE || "").split(",").map(s => s.trim()).filter(Boolean);
+            const choix = f.length ? tous.filter(a => f.includes(a.id)) : tous;
+            if (!choix.length) { console.error("::error::Aucun appareil ne correspond à « " + f.join(",") + " »"); process.exit(1); }
+            console.log("matrice=" + JSON.stringify({ appareil: choix }));
+          ' >> "$GITHUB_OUTPUT"
+          cat "$GITHUB_OUTPUT"
+
+  # Compilation sur l'image de production (Xcode 26.x, même chaîne que TestFlight).
+  build:
+    if: inputs.app_run_id == ''
+    runs-on: macos-26
+    timeout-minutes: 90
+    environment: production
+    steps:
+      - name: Checkout monorepo
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: ${{ secrets.MONOREPO_REPO }}
+          token: ${{ secrets.CI_PAT_TOKEN }}
+          path: app
+          ref: ${{ inputs.monorepo_ref }}
+
+      # Compilation avec l'Xcode de production (26.x) : même chaîne que TestFlight.
+      - name: Select Xcode 26.x (build)
+        run: |
+          XCODE_PATH=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+          [ -n "$XCODE_PATH" ] || { echo "::error::Xcode 26.x introuvable"; exit 1; }
+          sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
+          xcodebuild -version
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 9
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: app/pnpm-lock.yaml
+
+      - name: Cache CocoaPods
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cocoapods
+            ~/Library/Caches/CocoaPods
+          key: pods-${{ runner.os }}-${{ hashFiles('app/pnpm-lock.yaml') }}
+          restore-keys: pods-${{ runner.os }}-
+
+      - name: Setup EAS CLI
+        uses: expo/expo-github-action@c7b66a9c327a43a8fa7c0158e7f30d6040d2481e # v8.2.1
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Install dependencies
+        run: cd app && pnpm install --frozen-lockfile
+
+      # Build simulateur (profil `captures` : aucune signature, aucun envoi Sentry).
+      - name: Build simulateur
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          EAS_BUILD_NO_EXPO_GO_WARNING: "true"
+          EXPO_NO_CAPABILITY_SYNC: "1"
+          EXPO_PUBLIC_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_KEY }}
+          SENTRY_DISABLE_AUTO_UPLOAD: "true"
+        run: |
+          cd app/apps/mobile
+          eas build --platform ios --profile captures --local --non-interactive --output ../../simulateur.tar.gz
+          mkdir -p ../../simulateur && tar -xzf ../../simulateur.tar.gz -C ../../simulateur
+          APP=$(find ../../simulateur -maxdepth 3 -name '*.app' | head -1)
+          [ -n "$APP" ] || { echo "::error::.app introuvable dans l'archive"; exit 1; }
+          # Archive tar : l'artifact GitHub perd les droits d'exécution des binaires.
+          tar -czf ../../app-simulateur.tgz -C "$(dirname "$APP")" "$(basename "$APP")"
+
+      # Binaire simulateur seulement (non signé, rien de secret : la clé Supabase « anon »
+      # est publique par nature, elle est dans toute app installée).
+      - name: Artifact app simulateur
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: app-simulateur
+          path: app/app-simulateur.tgz
+          retention-days: 1
+
+  captures:
+    needs: [plan, build]
+    if: ${{ !cancelled() && needs.plan.result == 'success' && (needs.build.result == 'success' || needs.build.result == 'skipped') }}
+    runs-on: ${{ inputs.runner }}
+    permissions:
+      contents: read
+      actions: read
+    timeout-minutes: 120
+    environment: production
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrice) }}
+    steps:
+      - name: Checkout monorepo
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: ${{ secrets.MONOREPO_REPO }}
+          token: ${{ secrets.CI_PAT_TOKEN }}
+          path: app
+          ref: ${{ inputs.monorepo_ref }}
+
+      - name: Récupérer l'app simulateur
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: app-simulateur
+          path: .
+          run-id: ${{ inputs.app_run_id || github.run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+
+      # Simulateurs : Xcode choisi en entrée (défaut 26.6). Un .app compilé
+      # avec le SDK 26 tourne sur un runtime plus récent.
+      - name: Select Xcode (simulateurs)
+        env:
+          XCODE_VERSION: ${{ inputs.xcode_simulateurs }}
+        run: |
+          XCODE_PATH="/Applications/Xcode_${XCODE_VERSION}.app"
+          [ -d "$XCODE_PATH" ] || XCODE_PATH=$(ls -d /Applications/Xcode_*.app | grep -v -i beta | sort -V | tail -1)
+          sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
+          xcodebuild -version
+          # Runtime iOS de cet Xcode : téléchargé s'il manque.
+          SDK=$(xcrun --sdk iphonesimulator --show-sdk-version)
+          if ! xcrun simctl list runtimes | grep -q "iOS $SDK"; then
+            echo "Téléchargement du runtime iOS $SDK"
+            xcodebuild -downloadPlatform iOS || echo "::warning::Runtime iOS $SDK non téléchargé"
+          fi
+          xcrun simctl list runtimes
+
+      - name: Install Maestro
+        run: |
+          export JAVA_HOME="${JAVA_HOME_17_arm64:-${JAVA_HOME_17_X64:-$JAVA_HOME}}"
+          echo "JAVA_HOME=$JAVA_HOME" >> "$GITHUB_ENV"
+          curl -Ls "https://get.maestro.mobile.dev" | bash
+          echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
+          "$HOME/.maestro/bin/maestro" --version
+
+      - name: Captures
+        env:
+          DEMO_EMAIL: demo@meschasses.com
+          DEMO_PASSWORD: ${{ secrets.DEMO_PASSWORD }}
+          SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_KEY }}
+          SORTIE: ${{ github.workspace }}/captures
+          APPAREILS: ${{ matrix.appareil.motif }}
+          ORIENTATION: ${{ inputs.orientation }}
+          LOTS: ${{ inputs.lots }}
+          MAESTRO_CLI_NO_ANALYTICS: "1"
+          MAESTRO_DRIVER_STARTUP_TIMEOUT: "300000"
+        run: |
+          echo "::add-mask::$DEMO_PASSWORD"
+          mkdir -p simulateur && tar -xzf app-simulateur.tgz -C simulateur
+          export APP_PATH="$(find "$GITHUB_WORKSPACE/simulateur" -maxdepth 1 -name '*.app' | head -1)"
+          bash app/apps/mobile/store/creative-assets/captures-paysage/run-ios.sh
+
+      # Images et listes d'échecs seules (pas les journaux Maestro, qui contiennent les saisies).
+      - name: Artifact captures (partie)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: partie-${{ matrix.appareil.id }}
+          path: |
+            captures/**/*.png
+            captures/**/*.ips
+            captures/**/*.txt
+          retention-days: 3
+          if-no-files-found: warn
+
+      - name: Nettoyage
+        if: always()
+        run: rm -rf ~/.maestro/tests simulateur app-simulateur.tgz
+
+  # Réunit les parties par appareil en un seul artifact `captures-paysage-ios`.
+  rassembler:
+    needs: captures
+    if: ${{ !cancelled() && needs.captures.result != 'skipped' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Récupérer les parties
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: partie-*
+          path: captures
+          merge-multiple: true
+
+      - name: Résumé des échecs
+        run: |
+          {
+            echo "## Captures : $(find captures -name '*.png' ! -path '*/diagnostic/*' | wc -l | tr -d ' ') PNG"
+            for f in captures/*/echecs.txt; do
+              [ -s "$f" ] || continue
+              echo "### $(basename "$(dirname "$f")") : $(wc -l < "$f" | tr -d ' ') échec(s)"
+              echo '```'; cat "$f"; echo '```'
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Artifact captures
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: captures-paysage-ios${{ inputs.orientation == 'portrait' && '-portrait' || '' }}
+          path: captures
+          retention-days: 3
+          if-no-files-found: error

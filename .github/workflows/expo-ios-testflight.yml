@@ -44,6 +44,7 @@ jobs:
       - name: Checkout monorepo (package.json mobile seul)
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          persist-credentials: false
           repository: ${{ secrets.MONOREPO_REPO }}
           token: ${{ secrets.CI_PAT_TOKEN }}
           path: app
@@ -75,6 +76,7 @@ jobs:
       - name: Checkout monorepo
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          persist-credentials: false
           repository: ${{ secrets.MONOREPO_REPO }}
           token: ${{ secrets.CI_PAT_TOKEN }}
           path: app
@@ -100,6 +102,7 @@ jobs:
       - name: Checkout scripts CI
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          persist-credentials: false
           path: ci
 
       # PRODUCTION : contrôles AVANT toute minute de build (branche par défaut ou

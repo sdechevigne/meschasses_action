@@ -31,7 +31,10 @@ permissions: {}
 # Un build de test ne doit jamais annuler une mise en production en cours
 # (groupes séparés), et une mise en production n'est jamais annulée en vol.
 concurrency:
-  group: expo-ios-testflight-${{ inputs.destination || 'test' }}
+  # Builds de test : un groupe par code testé (monorepo_ref), pour que deux branches ne
+  # s'annulent plus entre elles (n° de build = run_number, donc sans collision).
+  # Production : un seul groupe, jamais annulé.
+  group: expo-ios-testflight-${{ inputs.destination || 'test' }}${{ inputs.destination != 'production' && format('-{0}', inputs.monorepo_ref || github.ref) || '' }}
   cancel-in-progress: ${{ inputs.destination != 'production' }}
 
 jobs:

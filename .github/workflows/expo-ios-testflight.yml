@@ -16,6 +16,10 @@ on:
         type: choice
         options: [test, production]
         default: test
+      watch:
+        description: "Inclure les cibles watchOS (app montre + complications) — JAMAIS en production tant que la montre n'est pas validée."
+        type: boolean
+        default: false
   push:
     tags:
       - "tf-v*"
@@ -211,6 +215,9 @@ jobs:
           # Bundle id partagé avec l'app live : ne PAS laisser EAS désactiver les
           # capabilities (push/apple-auth/associated-domains) déjà actives en prod.
           EXPO_NO_CAPABILITY_SYNC: "1"
+          # Cibles watchOS incluses UNIQUEMENT si l'input watch est coché. Lu par
+          # apps/mobile/app.config.js au prebuild (filtre @bacons/apple-targets).
+          MESCHASSES_WATCH: ${{ inputs.watch == true && '1' || '0' }}
           EXPO_PUBLIC_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
           EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_KEY }}
           # Analytics PostHog — clé inlinée dans le bundle (projet commun web+mobile,
@@ -241,6 +248,37 @@ jobs:
       # 56.0.14 lié à Swift Testing.
       - name: Contrôle des bibliothèques liées (.ipa)
         run: bash ci/.github/scripts/verifier-liens-ipa.sh app/app-store.ipa
+
+      # Contrôle Watch (.ipa) : le flag `watch` du dispatch doit faire la LOI.
+      # - watch=false → aucun dossier Watch/ embarqué (zero fuite vers un build store).
+      # - watch=true  → présence d'un dossier Payload/*.app/Watch/*.app contenant à
+      #   la fois l'app montre et son extension de complications (PlugIns/*.appex).
+      - name: Contrôle Watch (.ipa)
+        env:
+          WATCH_ENABLED: ${{ inputs.watch == true && '1' || '0' }}
+        run: |
+          set -euo pipefail
+          IPA="app/app-store.ipa"
+          [ -f "$IPA" ] || { echo "::error::$IPA introuvable"; exit 1; }
+          WATCH_ENTRIES=$(unzip -l "$IPA" | awk '{print $NF}' | grep -E '^Payload/[^/]+\.app/Watch/' || true)
+          if [ "$WATCH_ENABLED" = "1" ]; then
+            if [ -z "$WATCH_ENTRIES" ]; then
+              echo "::error::watch=true mais aucun Watch/ dans le .ipa"
+              exit 1
+            fi
+            WATCH_APP=$(printf '%s\n' "$WATCH_ENTRIES" | grep -E '^Payload/[^/]+\.app/Watch/[^/]+\.app/' | head -1 || true)
+            WATCH_APPEX=$(printf '%s\n' "$WATCH_ENTRIES" | grep -E '^Payload/[^/]+\.app/Watch/[^/]+\.app/PlugIns/[^/]+\.appex/' | head -1 || true)
+            [ -n "$WATCH_APP" ]   || { echo "::error::App montre manquante dans Watch/"; exit 1; }
+            [ -n "$WATCH_APPEX" ] || { echo "::error::Extension de complications manquante dans Watch/*.app/PlugIns/"; exit 1; }
+            echo "Watch/ présent : $WATCH_APP + $WATCH_APPEX"
+          else
+            if [ -n "$WATCH_ENTRIES" ]; then
+              echo "::error::watch=false mais Watch/ présent dans le .ipa"
+              printf '%s\n' "$WATCH_ENTRIES" | head -20
+              exit 1
+            fi
+            echo "Watch/ absent (watch=false) — OK"
+          fi
 
       # Aucun iPhone ne doit perdre l'app : minimum iOS de l'app et de ses frameworks inchangé (16.4).
       # Le widget (extension) a sa propre version (18.0, inchangée depuis sa création).

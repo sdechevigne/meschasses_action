@@ -27,6 +27,9 @@ jobs:
     # macOS compile le paquet avec Swift 5.9+ ; pas de dépendance au SDK iOS.
     runs-on: xcode-27
     timeout-minutes: 20
+    # Les secrets `MONOREPO_REPO` + `CI_PAT_TOKEN` sont scopés à l'environnement
+    # `production` (mêmes règles que l'iOS build).
+    environment: production
 
     steps:
       # Checkout du monorepo via le même PAT que le build iOS. L'app vit dans

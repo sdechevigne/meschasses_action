@@ -33,7 +33,7 @@ on:
           - paysage
           - portrait
       appareils:
-        description: "Appareils à lancer, séparés par « , » (pixel-7-boutons, pixel-7-gestes, pixel-tablet, pixel-fold). Vide = tous"
+        description: "Appareils à lancer, séparés par « , » (pixel-7-boutons, pixel-7-gestes, pixel-tablet, pixel-fold-ouvert). Vide = tous"
         required: false
         default: ""
       app_run_id:
@@ -68,7 +68,9 @@ jobs:
               { id: "pixel-7-boutons", profil: "^pixel_7$", nav: "boutons" },
               { id: "pixel-7-gestes", profil: "^pixel_7$", nav: "gestes" },
               { id: "pixel-tablet", profil: "^pixel_tablet$", nav: "" },
-              { id: "pixel-fold", profil: "^pixel_fold$|^pixel_9_pro_fold$|fold", nav: "" },
+              // Aucun profil de pliable dans avdmanager sur le runner (liste au run 40490124701) : écran intérieur
+              // du Pixel Fold ouvert (1840 x 2208, 380 ppp) simulé sur un Pixel 7 (taille et densité forcées).
+              { id: "pixel-fold-ouvert", profil: "^pixel_fold$|^pixel_9_pro_fold$|^pixel_7$", nav: "", taille: "1840x2208", densite: "380" },
             ];
             const f = (process.env.FILTRE || "").split(",").map(s => s.trim()).filter(Boolean);
             const choix = f.length ? tous.filter(a => f.includes(a.id)) : tous;
@@ -83,6 +85,15 @@ jobs:
     timeout-minutes: 90
     environment: production
     steps:
+      # Le build Gradle a manqué de place sur le runner (ENOSPC, runs 40490127025 / 40490129353) : on retire les
+      # outils préinstallés inutiles ici (le SDK Android reste).
+      - name: Libérer de la place disque
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /usr/share/swift /usr/local/share/boost "$AGENT_TOOLSDIRECTORY/CodeQL" /usr/local/lib/node_modules/@azure 2>/dev/null || true
+          sudo docker image prune -af >/dev/null 2>&1 || true
+          df -h /
+
       - name: Checkout monorepo
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -155,6 +166,8 @@ jobs:
           EXPO_PUBLIC_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
           EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_KEY }}
           SENTRY_DISABLE_AUTO_UPLOAD: "true"
+          # Émulateurs x86_64 seulement : une seule architecture native (APK plus petit, build plus court).
+          ORG_GRADLE_PROJECT_reactNativeArchitectures: x86_64
         run: |
           cd app/apps/mobile
           eas build --platform android --profile captures --local --non-interactive --output ../../app-captures.apk
@@ -255,6 +268,8 @@ jobs:
           SORTIE: ${{ github.workspace }}/captures
           APPAREIL: ${{ matrix.appareil.id }}
           NAV: ${{ matrix.appareil.nav }}
+          TAILLE_ECRAN: ${{ matrix.appareil.taille }}
+          DENSITE: ${{ matrix.appareil.densite }}
           ORIENTATION: ${{ inputs.orientation }}
           LOTS: ${{ inputs.lots }}
           MAESTRO_CLI_NO_ANALYTICS: "1"

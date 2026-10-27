@@ -115,6 +115,8 @@ async function findActiveAppStoreProfileCert(bundleIdentifier) {
 }
 
 // ---- 2. ASC : s'assure du bundle, du profil IOS_APP_STORE lié au cert donné, retourne le .mobileprovision en base64.
+// Les profils INVALID (une capability a été ajoutée au bundle depuis leur création,
+// ou le cert a tourné) sont supprimés avant d'en recréer un à jour.
 async function ensureAppStoreProfile(bundleIdentifier, certId, { name } = {}) {
   let bundle = (await asc('GET', `/v1/bundleIds?filter[identifier]=${encodeURIComponent(bundleIdentifier)}&limit=1`)).data?.[0];
   if (!bundle) {
@@ -135,6 +137,11 @@ async function ensureAppStoreProfile(bundleIdentifier, certId, { name } = {}) {
   }
 
   const existing = (await asc('GET', `/v1/bundleIds/${bundle.id}/profiles?limit=50`)).data || [];
+  const staleAppStore = existing.filter((p) => p.attributes.profileType === 'IOS_APP_STORE' && p.attributes.profileState !== 'ACTIVE');
+  for (const stale of staleAppStore) {
+    console.log(`[ASC] Suppression du profil IOS_APP_STORE ${stale.attributes.profileState} ${stale.id}`);
+    await asc('DELETE', `/v1/profiles/${stale.id}`);
+  }
   let profile = existing.find((p) => p.attributes.profileType === 'IOS_APP_STORE' && p.attributes.profileState === 'ACTIVE');
   if (!profile) {
     console.log(`[ASC] Création du profil IOS_APP_STORE pour ${bundleIdentifier}`);
@@ -208,11 +215,27 @@ async function expoFindDistributionCertificateForBundle(appFullName, appleAppIde
 
 async function expoFindIosAppCredentials(appFullName, appleAppIdentifierId) {
   const q = `query($p: String!, $a: String!) {
-    app { byFullName(fullName: $p) { id iosAppCredentials(filter: { appleAppIdentifierId: $a }) { id iosAppBuildCredentialsList(filter: { iosDistributionType: APP_STORE }) { id distributionCertificate { id } provisioningProfile { id } } } } }
+    app { byFullName(fullName: $p) { id iosAppCredentials(filter: { appleAppIdentifierId: $a }) { id iosAppBuildCredentialsList(filter: { iosDistributionType: APP_STORE }) { id distributionCertificate { id } provisioningProfile { id developerPortalIdentifier } } } } }
   }`;
   const d = await expo(q, { p: appFullName, a: appleAppIdentifierId });
   const ac = d.app.byFullName?.iosAppCredentials?.[0] ?? null;
   return ac;
+}
+
+// Supprime l'IosAppBuildCredentials existant côté Expo (p. ex. parce que son
+// provisioning profile côté Expo pointe vers un developer portal id supprimé).
+async function expoDeleteIosAppBuildCredentials(iosAppBuildCredentialsId) {
+  const q = `mutation($id: ID!) { iosAppBuildCredentials { deleteIosAppBuildCredentials(id: $id) { id } } }`;
+  await expo(q, { id: iosAppBuildCredentialsId });
+}
+
+async function expoDeleteAppleProvisioningProfile(id) {
+  const q = `mutation($id: ID!) { appleProvisioningProfile { deleteAppleProvisioningProfile(id: $id) { id } } }`;
+  try {
+    await expo(q, { id });
+  } catch (e) {
+    console.log(`[Expo] Suppression du profile ${id} ignorée: ${e.message}`);
+  }
 }
 
 async function expoCreateIosAppCredentials(appId, appleAppIdentifierId, appleTeamId) {
@@ -292,15 +315,28 @@ async function main() {
       console.log(`[Expo] IosAppCredentials déjà présent: ${credentials.id}`);
     }
 
-    // d. Si l'IosAppBuildCredentials APP_STORE est absent, créer l'AppleProvisioningProfile + le build creds.
+    // d. Si l'IosAppBuildCredentials APP_STORE est absent OU pointe vers un profil
+    //    différent du profil ACTIVE qu'on vient de constater côté Apple, on le refait.
+    //    Mesuré nécessaire après l'activation d'une capability sur un bundle existant :
+    //    les anciens profils tombent en INVALID côté ASC (reproduit le 2026-10-27 après
+    //    activation d'APP_GROUPS sur watchkitapp/.complications).
     const existingBuild = credentials.iosAppBuildCredentialsList?.find?.((b) => b.distributionCertificate?.id === distributionCertificateId);
-    if (!existingBuild) {
+    const existingPortalId = existingBuild?.provisioningProfile?.developerPortalIdentifier ?? null;
+    const needsRecreate = !existingBuild || existingPortalId !== profileAppleId;
+    if (needsRecreate) {
+      if (existingBuild) {
+        console.log(`[Expo] Reset IosAppBuildCredentials ${existingBuild.id} (profile portal id ${existingPortalId || 'absent'} ≠ ${profileAppleId})`);
+        await expoDeleteIosAppBuildCredentials(existingBuild.id);
+        if (existingBuild.provisioningProfile?.id) {
+          await expoDeleteAppleProvisioningProfile(existingBuild.provisioningProfile.id);
+        }
+      }
       const pp = await expoCreateAppleProvisioningProfile(accountId, aai.id, profileBase64, profileAppleId);
       console.log(`[Expo] AppleProvisioningProfile créé: ${pp.id}`);
       const built = await expoCreateIosAppBuildCredentials(credentials.id, distributionCertificateId, pp.id);
       console.log(`[Expo] IosAppBuildCredentials créé: ${built.id}`);
     } else {
-      console.log(`[Expo] IosAppBuildCredentials déjà présent: ${existingBuild.id}`);
+      console.log(`[Expo] IosAppBuildCredentials déjà à jour: ${existingBuild.id} (portal ${existingPortalId})`);
     }
   }
 

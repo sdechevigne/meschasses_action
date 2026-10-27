@@ -40,6 +40,22 @@ if (TARGET_BUNDLES.length === 0) {
   console.error('TARGET_BUNDLES vide — rien à faire');
   process.exit(1);
 }
+// Liste blanche en DUR des bundles qu'on autorise à être resynchronisés
+// (suppression + recréation d'IosAppBuildCredentials côté Expo). Toute
+// tentative sur un bundle hors liste — en particulier com.meschasses ou
+// com.meschasses.widget qui portent la prod iPhone — fait échouer le script.
+// Blinde contre une faute de frappe dans TARGET_BUNDLES ou un bug qui
+// toucherait au mauvais AppleAppIdentifier côté Expo.
+const RESYNC_ALLOWLIST = new Set([
+  'com.meschasses.watchkitapp',
+  'com.meschasses.watchkitapp.complications',
+]);
+for (const b of TARGET_BUNDLES) {
+  if (!RESYNC_ALLOWLIST.has(b)) {
+    console.error(`TARGET_BUNDLES contient « ${b} » qui n'est pas dans la liste blanche montre : ${[...RESYNC_ALLOWLIST].join(', ')}`);
+    process.exit(1);
+  }
+}
 const EXPO_TOKEN = process.env.EXPO_TOKEN;
 if (!EXPO_TOKEN) { console.error('EXPO_TOKEN manquant'); process.exit(1); }
 
@@ -101,9 +117,18 @@ async function expo(query, variables) {
   return j.data;
 }
 
+// Trouve un bundle Apple par son identifier EXACT. `/v1/bundleIds?filter[identifier]=X`
+// retourne tous les bundles dont l'identifier CONTIENT X : `com.meschasses` ramène
+// `com.meschasses`, `com.meschasses.widget`, `.watchkitapp`, `.complications`, et
+// `limit=1` sélectionne un ordre non spécifié. On liste donc large puis on filtre.
+async function findBundleByExactIdentifier(bundleIdentifier) {
+  const d = await asc('GET', `/v1/bundleIds?filter[identifier]=${encodeURIComponent(bundleIdentifier)}&limit=200`);
+  return (d.data || []).find((b) => b.attributes?.identifier === bundleIdentifier) ?? null;
+}
+
 // ---- 1. Lire côté Apple le profil IOS_APP_STORE actif du bundle principal (pour en déduire le cert).
 async function findActiveAppStoreProfileCert(bundleIdentifier) {
-  const bundle = (await asc('GET', `/v1/bundleIds?filter[identifier]=${encodeURIComponent(bundleIdentifier)}&limit=1`)).data?.[0];
+  const bundle = await findBundleByExactIdentifier(bundleIdentifier);
   if (!bundle) throw new Error(`Bundle Apple ${bundleIdentifier} introuvable`);
   const profiles = (await asc('GET', `/v1/bundleIds/${bundle.id}/profiles?limit=50`)).data || [];
   const active = profiles.find((p) => p.attributes.profileType === 'IOS_APP_STORE' && p.attributes.profileState === 'ACTIVE');
@@ -118,7 +143,7 @@ async function findActiveAppStoreProfileCert(bundleIdentifier) {
 // Les profils INVALID (une capability a été ajoutée au bundle depuis leur création,
 // ou le cert a tourné) sont supprimés avant d'en recréer un à jour.
 async function ensureAppStoreProfile(bundleIdentifier, certId, { name } = {}) {
-  let bundle = (await asc('GET', `/v1/bundleIds?filter[identifier]=${encodeURIComponent(bundleIdentifier)}&limit=1`)).data?.[0];
+  let bundle = await findBundleByExactIdentifier(bundleIdentifier);
   if (!bundle) {
     console.log(`[ASC] Création du bundle Apple ${bundleIdentifier}`);
     const created = await asc('POST', '/v1/bundleIds', {
@@ -183,7 +208,10 @@ async function expoApp() {
 async function expoFindAppleAppIdentifier(accountName, bundleIdentifier) {
   const q = `query($n: String!, $b: String!) { account { byName(accountName: $n) { id appleAppIdentifiers(bundleIdentifier: $b) { id bundleIdentifier } } } }`;
   const d = await expo(q, { n: accountName, b: bundleIdentifier });
-  return d.account.byName.appleAppIdentifiers?.[0] ?? null;
+  const all = d.account.byName.appleAppIdentifiers ?? [];
+  // Même précaution que côté ASC : égalité exacte, pas de confiance aveugle au [0]
+  // si le serveur devait un jour élargir la recherche à une sous-chaîne.
+  return all.find((x) => x.bundleIdentifier === bundleIdentifier) ?? null;
 }
 
 async function expoCreateAppleAppIdentifier(accountId, bundleIdentifier, appleTeamId) {
@@ -304,6 +332,15 @@ async function main() {
       console.log(`[Expo] AppleAppIdentifier créé: ${aai.id}`);
     } else {
       console.log(`[Expo] AppleAppIdentifier déjà présent: ${aai.id}`);
+    }
+    // Ceinture + bretelles avant toute écriture : ne JAMAIS continuer sur un
+    // AppleAppIdentifier qui ne porte pas EXACTEMENT le bundle de la boucle.
+    // Un bug de query qui remonterait un identifier voisin (p. ex. le bundle
+    // principal) pourrait sinon détruire ses IosAppBuildCredentials.
+    if (aai.bundleIdentifier !== bundle) {
+      throw new Error(
+        `[Expo] AppleAppIdentifier ${aai.id} porte « ${aai.bundleIdentifier} » et pas « ${bundle} » : refus de continuer`,
+      );
     }
 
     // c. Expo : IosAppCredentials

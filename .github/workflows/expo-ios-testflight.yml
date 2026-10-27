@@ -75,6 +75,16 @@ jobs:
       contents: read
 
     steps:
+      # Garde-fou : les cibles watchOS ne sont PAS encore validées pour la prod.
+      # Un dispatch watch=true + destination=production serait un envoi à Apple
+      # d'un binaire qui n'a jamais été recetté — bloqué ici, avant tout coût de
+      # build. À retirer quand la montre sera prête pour la vraie publication.
+      - name: Garde — watch=true interdit en production
+        if: inputs.watch == true && inputs.destination == 'production'
+        run: |
+          echo "::error::watch=true est interdit avec destination=production tant que la montre n'est pas validée. Utiliser destination=test."
+          exit 1
+
       # Checkout du monorepo (pnpm/Turborepo) via un PAT dédié.
       # L'app Expo vit dans app/apps/mobile ; la racine workspace est app/.
       - name: Checkout monorepo
@@ -213,7 +223,12 @@ jobs:
       # eas-cli 26.0.0). La clé .p8 vit uniquement dans $HOME/private_keys, dossier
       # effacé par le step final « Wipe build outputs », et sa valeur est masquée
       # ligne à ligne avant écriture.
+      # Conditionné à `inputs.watch == true` : les builds iOS « normaux » (prod
+      # comprise) continuent de fonctionner exactement comme avant ce chantier,
+      # sans qu'eas voie EXPO_ASC_*. L'upload à TestFlight plus bas gère sa
+      # propre clé p8 indépendamment (step « Upload to TestFlight »).
       - name: Prepare ASC API key for EAS (non-interactive signing)
+        if: inputs.watch == true
         id: asc_key
         env:
           ASC_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
@@ -278,15 +293,20 @@ jobs:
           MESCHASSES_WATCH: ${{ inputs.watch == true && '1' || '0' }}
           # Autorise eas-cli à parler à App Store Connect sans prompt (clé API
           # d'équipe, Issuer ID requis). Lu par resolveCredentials.js d'eas-cli.
-          EXPO_ASC_API_KEY_PATH: ${{ steps.asc_key.outputs.key_file }}
-          EXPO_ASC_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
-          EXPO_ASC_ISSUER_ID: ${{ secrets.APPSTORE_ISSUER_ID }}
-          # Dérive le team Apple sans prompt (eas-cli demande sinon).
-          EXPO_APPLE_TEAM_ID: "B77M2F5M8R"
+          # Posé UNIQUEMENT quand watch=true : les builds iOS « normaux » (prod
+          # comprise) continuent de n'utiliser que les credentials gérés par EAS
+          # côté serveur, exactement comme avant ce chantier.
+          EXPO_ASC_API_KEY_PATH: ${{ inputs.watch == true && steps.asc_key.outputs.key_file || '' }}
+          EXPO_ASC_KEY_ID: ${{ inputs.watch == true && secrets.APPSTORE_API_KEY_ID || '' }}
+          EXPO_ASC_ISSUER_ID: ${{ inputs.watch == true && secrets.APPSTORE_ISSUER_ID || '' }}
+          # Dérive le team Apple sans prompt (eas-cli demande sinon). Même
+          # conditionnalité que les EXPO_ASC_* : seulement quand on construit les
+          # cibles watchOS.
+          EXPO_APPLE_TEAM_ID: ${{ inputs.watch == true && 'B77M2F5M8R' || '' }}
           # Compte Apple Developer Program de « Mes Chasses » = organisation.
           # Si l'équipe était INDIVIDUAL, le job échouerait tôt avec un message
           # clair — à corriger ici (3 valeurs possibles : IN_HOUSE / COMPANY_OR_ORGANIZATION / INDIVIDUAL).
-          EXPO_APPLE_TEAM_TYPE: "COMPANY_OR_ORGANIZATION"
+          EXPO_APPLE_TEAM_TYPE: ${{ inputs.watch == true && 'COMPANY_OR_ORGANIZATION' || '' }}
           EXPO_PUBLIC_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
           EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_KEY }}
           # Analytics PostHog — clé inlinée dans le bundle (projet commun web+mobile,

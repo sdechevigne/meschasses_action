@@ -53,7 +53,11 @@ manquants=0
 while read -r bin; do
   [ -n "$bin" ] || continue
   # 1re ligne = nom du binaire ; les suivantes = bibliothèques liées.
+  # Sur un binaire multi-architecture (ex. une extension watchOS en arm64 +
+  # arm64_32), otool répète l'en-tête `<chemin> (architecture <nom>):` AVANT
+  # chaque sous-liste. On saute ces en-têtes : ils ne sont pas des libs liées.
   while read -r ligne; do
+    case "$ligne" in *" (architecture "*"):"*) continue ;; esac
     dep="$(echo "$ligne" | sed -E 's/^[[:space:]]+//; s/ \(compatibility version.*$//')"
     [ -n "$dep" ] || continue
     # Lien faible : son absence ne bloque pas le lancement.

@@ -240,6 +240,29 @@ jobs:
             || { echo "::error::APPSTORE_API_PRIVATE_KEY invalide (ni PEM ni base64 de PEM)"; exit 1; }
           echo "key_file=$KEY_FILE" >> "$GITHUB_OUTPUT"
 
+      # Avant tout build qui introduit un NOUVEAU bundle iOS (ici les cibles
+      # watchOS), on amorce ses credentials côté Apple + côté Expo. Sans cela,
+      # eas-cli non-interactif échoue sur `MissingCredentialsNonInteractiveError`
+      # (SetUpDistributionCertificate.runNonInteractiveAsync) : il ne tente
+      # jamais de réutiliser un cert existant pour un bundle nouvellement
+      # rencontré. Le script crée côté ASC les bundleIds + un IOS_APP_STORE
+      # provisioning profile lié au MÊME certificat de distribution que celui
+      # qu'utilise déjà `com.meschasses`, télécharge le `.mobileprovision`, puis
+      # l'enregistre côté Expo via les mutations GraphQL `createApple*` /
+      # `createIosAppBuildCredentials`. Idempotent : réexécution = no-op.
+      - name: Amorce credentials watch (ASC + Expo GraphQL)
+        if: inputs.watch == true
+        env:
+          APPSTORE_API_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
+          APPSTORE_ISSUER_ID: ${{ secrets.APPSTORE_ISSUER_ID }}
+          APPSTORE_API_PRIVATE_KEY_PATH: ${{ steps.asc_key.outputs.key_file }}
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          EXPO_APP_ID: "723bb511-987b-4d04-983b-40dfa4929bba"
+          EXPO_APPLE_TEAM_ID: "B77M2F5M8R"
+          PRIMARY_BUNDLE: "com.meschasses"
+          TARGET_BUNDLES: "com.meschasses.watchkitapp com.meschasses.watchkitapp.complications"
+        run: node ci/.github/scripts/prime-watch-credentials.mjs
+
       # eas build --local s'exécute dans apps/mobile. Sortie écrite dans app/
       # (../../app-store.ipa depuis apps/mobile) pour rester hors de l'app.
       # Variables EXPO_PUBLIC_* mappées sur les secrets existants (réutilisés).

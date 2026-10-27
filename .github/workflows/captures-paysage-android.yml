@@ -13,7 +13,11 @@ on:
   workflow_dispatch:
     inputs:
       monorepo_ref:
-        description: "SHA complet (40 caractères) ou branche du monorepo (vide = branche par défaut)"
+        description: "SHA complet (40 caractères) ou branche du monorepo à construire (vide = branche par défaut)"
+        required: false
+        default: ""
+      scripts_ref:
+        description: "SHA complet ou branche des scripts de capture (vide = monorepo_ref) : capturer une ancienne version de l'app avec les scripts actuels"
         required: false
         default: ""
       lots:
@@ -41,8 +45,9 @@ on:
 permissions:
   contents: read
 
+# Un groupe par version d'app : deux versions comparées (monorepo_ref différents) tournent côte à côte.
 concurrency:
-  group: captures-paysage-android
+  group: captures-paysage-android-${{ inputs.monorepo_ref }}
   cancel-in-progress: true
 
 jobs:
@@ -60,10 +65,10 @@ jobs:
         run: |
           node -e '
             const tous = [
-              { id: "pixel-7-boutons", profil: "pixel_7", nav: "boutons" },
-              { id: "pixel-7-gestes", profil: "pixel_7", nav: "gestes" },
-              { id: "pixel-tablet", profil: "pixel_tablet", nav: "" },
-              { id: "pixel-fold", profil: "pixel_fold", nav: "" },
+              { id: "pixel-7-boutons", profil: "^pixel_7$", nav: "boutons" },
+              { id: "pixel-7-gestes", profil: "^pixel_7$", nav: "gestes" },
+              { id: "pixel-tablet", profil: "^pixel_tablet$", nav: "" },
+              { id: "pixel-fold", profil: "^pixel_fold$|^pixel_9_pro_fold$|fold", nav: "" },
             ];
             const f = (process.env.FILTRE || "").split(",").map(s => s.trim()).filter(Boolean);
             const choix = f.length ? tous.filter(a => f.includes(a.id)) : tous;
@@ -187,7 +192,7 @@ jobs:
           repository: ${{ secrets.MONOREPO_REPO }}
           token: ${{ secrets.CI_PAT_TOKEN }}
           path: app
-          ref: ${{ inputs.monorepo_ref }}
+          ref: ${{ inputs.scripts_ref || inputs.monorepo_ref }}
 
       - name: Récupérer l'APK
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -214,13 +219,30 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
+      # Profils d'appareil connus de l'avdmanager du runner (l'identifiant du Fold varie selon la version des
+      # outils : « pixel_fold » absent au run 40479826705). Le motif de la matrice choisit le premier qui convient.
+      - name: Profil d'appareil
+        id: profil
+        env:
+          MOTIF: ${{ matrix.appareil.profil }}
+        run: |
+          LISTE=$("$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" list device -c)
+          echo "Profils disponibles : $(echo "$LISTE" | tr '\n' ' ')"
+          PROFIL=""
+          IFS='|' read -ra MOTIFS <<< "$MOTIF"
+          for m in "${MOTIFS[@]}"; do PROFIL=$(echo "$LISTE" | grep -E -m1 "$m" || true); [ -z "$PROFIL" ] || break; done
+          [ -n "$PROFIL" ] || { echo "::error::Aucun profil d'appareil ne correspond à « $MOTIF »"; exit 1; }
+          echo "Profil retenu : $PROFIL"
+          echo "nom=$PROFIL" >> "$GITHUB_OUTPUT"
+
       - name: Install Maestro
         run: |
           curl -Ls "https://get.maestro.mobile.dev" | bash
           echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
           "$HOME/.maestro/bin/maestro" --version
 
-      # Image `google_apis` (sans Google Play) : pas de proposition d'enregistrement du mot de passe.
+      # Image `google_apis` (sans Google Play) : pas de proposition d'enregistrement du mot de passe, adb root
+      # disponible (passage en français par run-android.sh).
       # Le script tient en une ligne : l'action exécute chaque ligne de `script` dans un shell séparé.
       - name: Captures
         uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
@@ -241,10 +263,10 @@ jobs:
           api-level: 35
           target: google_apis
           arch: x86_64
-          profile: ${{ matrix.appareil.profil }}
+          profile: ${{ steps.profil.outputs.nom }}
           ram-size: 4096M
           disk-size: 6000M
-          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -change-locale fr-FR
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
           disable-animations: true
           script: echo "::add-mask::$DEMO_PASSWORD" && bash app/apps/mobile/store/creative-assets/captures-paysage/run-android.sh
 

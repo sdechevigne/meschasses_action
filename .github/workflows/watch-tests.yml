@@ -1,0 +1,51 @@
+name: Watch Core — Swift tests
+
+# Tests unitaires du paquet SwiftPM `apps/mobile/watch-core` (modèle,
+# stockage, PhoneLink, etc.). Lancés sur runner macOS sans simulateur :
+# `swift test` compile et exécute XCTest nativement, bien plus rapidement
+# qu'un build iOS complet. La Tâche 11 étendra ce workflow (prebuild Expo,
+# xcodebuild, captures d'écran). En attendant, un `workflow_dispatch` nu.
+
+on:
+  workflow_dispatch:
+    inputs:
+      monorepo_ref:
+        description: "Branche (ou tag/SHA) du monorepo à tester — vide = branche par défaut"
+        required: false
+        default: ""
+
+permissions: {}
+
+concurrency:
+  group: watch-tests-${{ inputs.monorepo_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  swift-test:
+    # Même famille de runner que l'iOS build (Xcode 27.1, SDK watchOS 11+).
+    # Le socle (choix du runner) n'est pas nécessaire ici : `swift test`
+    # macOS compile le paquet avec Swift 5.9+ ; pas de dépendance au SDK iOS.
+    runs-on: xcode-27
+    timeout-minutes: 20
+
+    steps:
+      # Checkout du monorepo via le même PAT que le build iOS. L'app vit dans
+      # `app/apps/mobile/watch-core`.
+      - name: Checkout monorepo
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          repository: ${{ secrets.MONOREPO_REPO }}
+          token: ${{ secrets.CI_PAT_TOKEN }}
+          path: app
+          ref: ${{ inputs.monorepo_ref }}
+
+      - name: Trace du commit testé
+        run: |
+          echo "Commit monorepo : $(git -C app rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
+          swift --version | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: swift test --package-path apps/mobile/watch-core
+        working-directory: app
+        run: |
+          swift test --package-path apps/mobile/watch-core 2>&1 | tee "$GITHUB_STEP_SUMMARY"

@@ -51,4 +51,7 @@ jobs:
       - name: swift test --package-path apps/mobile/watch-core
         working-directory: app
         run: |
+          # pipefail : sans ça, `tee` renvoie 0 et un échec de `swift test`
+          # passe inaperçu (vécu le 2026-10-27, run 40588312474).
+          set -o pipefail
           swift test --package-path apps/mobile/watch-core 2>&1 | tee "$GITHUB_STEP_SUMMARY"

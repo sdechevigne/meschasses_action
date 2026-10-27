@@ -133,8 +133,10 @@ jobs:
           path: |
             ~/.gradle/caches
             ~/.gradle/wrapper
-          key: gradle-${{ runner.os }}-${{ hashFiles('app/pnpm-lock.yaml') }}
-          restore-keys: gradle-${{ runner.os }}-
+          # Clé PROPRE aux captures : ne jamais écrire dans le cache Gradle du build de production
+          # (expo-android-play.yml lit `gradle-<os>-…`, partagé jusqu'au run 40472915278).
+          key: gradle-captures-${{ runner.os }}-${{ hashFiles('app/pnpm-lock.yaml') }}
+          restore-keys: gradle-captures-${{ runner.os }}-
 
       - name: Setup EAS CLI
         uses: expo/expo-github-action@c7b66a9c327a43a8fa7c0158e7f30d6040d2481e # v8.2.1

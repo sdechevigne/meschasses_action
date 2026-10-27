@@ -205,6 +205,41 @@ jobs:
             fs.writeFileSync(p, JSON.stringify(j, null, 2) + "\n");
           '
 
+      # Clé App Store Connect API passée à eas-cli en NON-INTERACTIF : lui permet
+      # de créer ses profils de distribution tout seul (nouveaux bundles comme la
+      # montre watchOS). SANS cette étape, eas lève
+      # `InsufficientAuthenticationNonInteractiveError` sur toute nouvelle cible
+      # (SetUpProvisioningProfile.js / CreateProvisioningProfile.js lus dans
+      # eas-cli 26.0.0). La clé .p8 vit uniquement dans $HOME/private_keys, dossier
+      # effacé par le step final « Wipe build outputs », et sa valeur est masquée
+      # ligne à ligne avant écriture.
+      - name: Prepare ASC API key for EAS (non-interactive signing)
+        id: asc_key
+        env:
+          ASC_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
+          ASC_PRIVATE_KEY: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          set +x
+          [ -n "$ASC_KEY_ID" ]      || { echo "::error::APPSTORE_API_KEY_ID manquant"; exit 1; }
+          [ -n "$ASC_PRIVATE_KEY" ] || { echo "::error::APPSTORE_API_PRIVATE_KEY manquant"; exit 1; }
+          while IFS= read -r l; do
+            [ -n "$l" ] && echo "::add-mask::$l"
+          done <<< "$ASC_PRIVATE_KEY"
+          umask 077
+          KEY_DIR="$HOME/private_keys"
+          KEY_FILE="$KEY_DIR/AuthKey_${ASC_KEY_ID}.p8"
+          mkdir -p "$KEY_DIR" && chmod 700 "$KEY_DIR"
+          if printf '%s' "$ASC_PRIVATE_KEY" | grep -q "BEGIN PRIVATE KEY"; then
+            printf '%s\n' "$ASC_PRIVATE_KEY" > "$KEY_FILE"
+          else
+            printf '%s' "$ASC_PRIVATE_KEY" | base64 --decode > "$KEY_FILE"
+          fi
+          chmod 600 "$KEY_FILE"
+          openssl pkey -in "$KEY_FILE" -noout 2>/dev/null \
+            || { echo "::error::APPSTORE_API_PRIVATE_KEY invalide (ni PEM ni base64 de PEM)"; exit 1; }
+          echo "key_file=$KEY_FILE" >> "$GITHUB_OUTPUT"
+
       # eas build --local s'exécute dans apps/mobile. Sortie écrite dans app/
       # (../../app-store.ipa depuis apps/mobile) pour rester hors de l'app.
       # Variables EXPO_PUBLIC_* mappées sur les secrets existants (réutilisés).
@@ -218,6 +253,17 @@ jobs:
           # Cibles watchOS incluses UNIQUEMENT si l'input watch est coché. Lu par
           # apps/mobile/app.config.js au prebuild (filtre @bacons/apple-targets).
           MESCHASSES_WATCH: ${{ inputs.watch == true && '1' || '0' }}
+          # Autorise eas-cli à parler à App Store Connect sans prompt (clé API
+          # d'équipe, Issuer ID requis). Lu par resolveCredentials.js d'eas-cli.
+          EXPO_ASC_API_KEY_PATH: ${{ steps.asc_key.outputs.key_file }}
+          EXPO_ASC_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
+          EXPO_ASC_ISSUER_ID: ${{ secrets.APPSTORE_ISSUER_ID }}
+          # Dérive le team Apple sans prompt (eas-cli demande sinon).
+          EXPO_APPLE_TEAM_ID: "B77M2F5M8R"
+          # Compte Apple Developer Program de « Mes Chasses » = organisation.
+          # Si l'équipe était INDIVIDUAL, le job échouerait tôt avec un message
+          # clair — à corriger ici (3 valeurs possibles : IN_HOUSE / COMPANY_OR_ORGANIZATION / INDIVIDUAL).
+          EXPO_APPLE_TEAM_TYPE: "COMPANY_OR_ORGANIZATION"
           EXPO_PUBLIC_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
           EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_KEY }}
           # Analytics PostHog — clé inlinée dans le bundle (projet commun web+mobile,

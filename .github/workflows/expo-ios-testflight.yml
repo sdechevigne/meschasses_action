@@ -363,6 +363,41 @@ jobs:
             [ -n "$WATCH_APP" ]   || { echo "::error::App montre manquante dans Watch/"; exit 1; }
             [ -n "$WATCH_APPEX" ] || { echo "::error::Extension de complications manquante dans Watch/*.app/PlugIns/"; exit 1; }
             echo "Watch/ présent : $WATCH_APP + $WATCH_APPEX"
+
+            # Contrôle des architectures du binaire montre et de son extension.
+            # watchOS 10 (spec §Global Constraints) couvre Series 4+ : le binaire
+            # DOIT contenir arm64_32 (Series 4-6, SE) ET arm64 (Series 7+). Un
+            # link SwiftPM foireux produit un binaire sans arm64_32 — on refuse.
+            TMPDIR_CTRL="$(mktemp -d)"
+            unzip -q "$IPA" -d "$TMPDIR_CTRL"
+            WATCH_APP_DIR=$(find "$TMPDIR_CTRL/Payload" -maxdepth 3 -type d -name '*.app' -path '*/Watch/*' | head -1)
+            [ -n "$WATCH_APP_DIR" ] || { echo "::error::Dossier Watch/*.app introuvable après extraction"; exit 1; }
+            WATCH_APP_NAME=$(basename "$WATCH_APP_DIR" .app)
+            WATCH_EXE="$WATCH_APP_DIR/$WATCH_APP_NAME"
+            [ -f "$WATCH_EXE" ] || { echo "::error::Exécutable montre $WATCH_EXE introuvable"; exit 1; }
+            WATCH_ARCHS=$(xcrun lipo -archs "$WATCH_EXE")
+            echo "Archs app montre ($WATCH_APP_NAME) : $WATCH_ARCHS"
+            APPEX_DIR=$(find "$WATCH_APP_DIR/PlugIns" -maxdepth 2 -type d -name '*.appex' | head -1)
+            [ -n "$APPEX_DIR" ] || { echo "::error::Extension *.appex introuvable dans $WATCH_APP_DIR/PlugIns"; exit 1; }
+            APPEX_NAME=$(basename "$APPEX_DIR" .appex)
+            APPEX_EXE="$APPEX_DIR/$APPEX_NAME"
+            [ -f "$APPEX_EXE" ] || { echo "::error::Exécutable complication $APPEX_EXE introuvable"; exit 1; }
+            APPEX_ARCHS=$(xcrun lipo -archs "$APPEX_EXE")
+            echo "Archs complications ($APPEX_NAME) : $APPEX_ARCHS"
+            {
+              echo "Archs app montre ($WATCH_APP_NAME) : $WATCH_ARCHS"
+              echo "Archs complications ($APPEX_NAME) : $APPEX_ARCHS"
+            } >> "$GITHUB_STEP_SUMMARY"
+            MISSING=""
+            for arch in arm64_32 arm64; do
+              echo "$WATCH_ARCHS" | tr ' ' '\n' | grep -qx "$arch" || MISSING="$MISSING app-montre:$arch"
+              echo "$APPEX_ARCHS" | tr ' ' '\n' | grep -qx "$arch" || MISSING="$MISSING complications:$arch"
+            done
+            if [ -n "$MISSING" ]; then
+              echo "::error::Architectures manquantes :$MISSING (watchOS 10 exige arm64_32 + arm64)"
+              exit 1
+            fi
+            rm -rf "$TMPDIR_CTRL"
           else
             if [ -n "$WATCH_ENTRIES" ]; then
               echo "::error::watch=false mais Watch/ présent dans le .ipa"

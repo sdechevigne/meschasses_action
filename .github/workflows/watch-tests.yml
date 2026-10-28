@@ -142,16 +142,24 @@ jobs:
       # cherche à vérifier que ça compile, pas à produire un binaire signé.
       # `generic/platform=watchOS Simulator` évite d'avoir à sélectionner un
       # simulateur précis par son UDID.
+      #
+      # Pas de workspace ni de scheme : on cible le project `MesChasses.xcodeproj`
+      # directement avec `-target MesChassesWatch`. Autrement, le scheme
+      # MesChassesWatch (généré par @bacons/apple-targets) trimballe toutes les
+      # dépendances des Pods du projet (RN, MapLibre, Firebase, etc.) et le
+      # build dépasse 45 min. L'app montre ne lie AUCUN de ces pods — un build
+      # ciblé sur le target natif coupe le chemin critique.
       - name: xcodebuild — MesChassesWatch (app montre)
         working-directory: app/apps/mobile/ios
         run: |
           set -o pipefail
           xcodebuild \
-            -workspace MesChasses.xcworkspace \
-            -scheme MesChassesWatch \
+            -project MesChasses.xcodeproj \
+            -target MesChassesWatch \
             -configuration Debug \
-            -destination 'generic/platform=watchOS Simulator' \
+            -sdk watchsimulator \
             -skipPackagePluginValidation \
+            ONLY_ACTIVE_ARCH=YES \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY= \
@@ -162,11 +170,12 @@ jobs:
         run: |
           set -o pipefail
           xcodebuild \
-            -workspace MesChasses.xcworkspace \
-            -scheme MesChassesWatchComplications \
+            -project MesChasses.xcodeproj \
+            -target MesChassesWatchComplications \
             -configuration Debug \
-            -destination 'generic/platform=watchOS Simulator' \
+            -sdk watchsimulator \
             -skipPackagePluginValidation \
+            ONLY_ACTIVE_ARCH=YES \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY= \

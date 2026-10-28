@@ -263,44 +263,75 @@ jobs:
             build 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" | tail -200
 
       # Vérification explicite que les DEUX cibles ont bien produit un binaire
-      # non trivial, pas seulement une archive propre : on contrôle la présence
-      # des `.app` / `.appex` ET on inspecte la table de symboles avec `nm` à
-      # la recherche d'un symbole Swift d'une des sources (`homeState` pour
-      # l'app, `NextHuntComplicationView` / `Complication*` pour la
-      # complication). Ce step tombe si xcodebuild a « réussi » sans rien
-      # produire (ex. target vide, source ignorée).
+      # non trivial, pas seulement une archive propre.
+      #
+      # Trois contrôles par cible :
+      #   1. Le binaire existe (sinon on dump l'arborescence pour diagnostic).
+      #   2. Ses archs couvrent arm64 (watchOS simulateur sur Apple Silicon)
+      #      ET x86_64 (watchOS simulateur sur Intel) — soit la couverture
+      #      universelle attendue pour un build Debug sans ONLY_ACTIVE_ARCH.
+      #   3. Un `.swiftmodule/<arch>-apple-watchos-simulator.swiftmodule` a
+      #      bien été produit à côté — c'est la preuve DIRECTE que du code
+      #      Swift propre à la target a été compilé (sinon xcodebuild aurait
+      #      produit un binaire vide par pur héritage).
       - name: Vérification des binaires watchOS produits
         working-directory: app/apps/mobile/ios
         run: |
           set -euo pipefail
-          APP="build-app/Debug-watchsimulator/MesChassesWatch.app/MesChassesWatch"
-          APPEX="build-complications/Debug-watchsimulator/MesChassesWatchComplications.appex/MesChassesWatchComplications"
 
-          echo "## Binaires produits" >> "$GITHUB_STEP_SUMMARY"
-          for binary in "$APP" "$APPEX"; do
+          verify() {
+            local label="$1"
+            local build_dir="$2"
+            local product_bundle="$3"
+            local module_name="$4"
+
+            local binary="$build_dir/Debug-watchsimulator/$product_bundle/$module_name"
+            local swiftmodule_dir="$build_dir/Debug-watchsimulator/$module_name.swiftmodule"
+
+            echo "### $label" >> "$GITHUB_STEP_SUMMARY"
+
             if [ ! -f "$binary" ]; then
               echo "::error::Binaire manquant : $binary"
-              echo "## Arborescence build-app/ et build-complications/" >> "$GITHUB_STEP_SUMMARY"
-              find build-app build-complications -maxdepth 4 -type f 2>&1 | tail -40 >> "$GITHUB_STEP_SUMMARY" || true
+              echo "**Arborescence $build_dir** (max 4 niveaux)" >> "$GITHUB_STEP_SUMMARY"
+              find "$build_dir" -maxdepth 4 2>&1 | head -40 >> "$GITHUB_STEP_SUMMARY" || true
               exit 1
             fi
-            SIZE=$(stat -f%z "$binary")
-            ARCHS=$(xcrun lipo -archs "$binary" 2>/dev/null || echo "?")
-            echo "- $binary ($SIZE octets, archs: $ARCHS)" >> "$GITHUB_STEP_SUMMARY"
-          done
+            local size archs
+            size=$(stat -f%z "$binary")
+            archs=$(xcrun lipo -archs "$binary" 2>/dev/null || echo "?")
+            echo "- binaire : $binary ($size octets, archs: $archs)" >> "$GITHUB_STEP_SUMMARY"
 
-          echo "## Symboles Swift (échantillon)" >> "$GITHUB_STEP_SUMMARY"
-          # app montre : `homeState(_:)` est utilisé par HomeView.
-          if ! xcrun nm -gU "$APP" 2>/dev/null | grep -q "homeState"; then
-            echo "::error::Symbole 'homeState' absent de l'app montre"
-            exit 1
-          fi
-          echo "- app montre : symbole \`homeState\` présent ✓" >> "$GITHUB_STEP_SUMMARY"
+            # arm64 + x86_64 attendus pour un build watchsimulator sans ONLY_ACTIVE_ARCH.
+            for arch in arm64 x86_64; do
+              if ! echo "$archs" | tr ' ' '\n' | grep -qx "$arch"; then
+                echo "::error::Arch $arch absente de $binary (lipo -archs : $archs)"
+                exit 1
+              fi
+            done
+            echo "- archs attendues (arm64 + x86_64) : présentes ✓" >> "$GITHUB_STEP_SUMMARY"
 
-          # complication : `NextHuntComplicationView` est défini dans
-          # targets/watch-widget/Complications.swift.
-          if ! xcrun nm -gU "$APPEX" 2>/dev/null | grep -q "Complication"; then
-            echo "::error::Aucun symbole 'Complication*' dans la complication"
-            exit 1
-          fi
-          echo "- complication : symboles \`Complication*\` présents ✓" >> "$GITHUB_STEP_SUMMARY"
+            # Un .swiftmodule par arch à côté → preuve que du Swift de la target a été compilé.
+            if [ ! -d "$swiftmodule_dir" ]; then
+              echo "::error::$swiftmodule_dir manquant — xcodebuild n'a pas produit de swiftmodule pour cette target"
+              exit 1
+            fi
+            local modules
+            modules=$(ls -1 "$swiftmodule_dir" | grep -E "watchos-simulator\.swiftmodule$" | wc -l | tr -d ' ')
+            if [ "$modules" -lt 2 ]; then
+              echo "::error::$swiftmodule_dir n'a que $modules .swiftmodule (attendu ≥ 2, un par arch)"
+              ls -la "$swiftmodule_dir" >> "$GITHUB_STEP_SUMMARY" || true
+              exit 1
+            fi
+            echo "- $modules .swiftmodule compilés dans $swiftmodule_dir ✓" >> "$GITHUB_STEP_SUMMARY"
+          }
+
+          echo "## Vérification des cibles watchOS" >> "$GITHUB_STEP_SUMMARY"
+          verify "App montre (MesChassesWatch)" \
+            "build-app" \
+            "MesChassesWatch.app" \
+            "MesChassesWatch"
+
+          verify "Complications (MesChassesWatchComplications)" \
+            "build-complications" \
+            "MesChassesWatchComplications.appex" \
+            "MesChassesWatchComplications"

@@ -42,6 +42,9 @@ set -o pipefail
 OUTDIR="${OUTDIR:-watch-captures-store}"
 BUNDLE_ID="com.meschasses.watchkitapp"
 WAIT_SECONDS="${WAIT_SECONDS:-5}"
+# Si définie, ne traite qu'une seule taille (ex. ONLY_SIZE=49mm-ultra). Pensée
+# pour le workflow qui lance 1 job par taille via `strategy.matrix`.
+ONLY_SIZE="${ONLY_SIZE:-}"
 # Attente supplémentaire après `simctl location set` pour que CoreLocation
 # propage la position avant la capture `post`.
 LOCATION_SETTLE_SECONDS="${LOCATION_SETTLE_SECONDS:-6}"
@@ -398,17 +401,17 @@ first=1
 for pair in "${POOL[@]}"; do
   label="${pair%%:*}"
   type_id="${pair#*:}"
+  # Mode « 1 taille à la fois » : on ignore tout ce qui ne correspond pas.
+  if [[ -n "$ONLY_SIZE" && "$label" != "$ONLY_SIZE" ]]; then
+    continue
+  fi
   if [[ -z "$type_id" ]]; then
     echo "- $label : device type absent, taille ignorée"
     continue
   fi
   if (( first == 0 )); then
-    # Entre deux devices : restart agressif. Rund de 40755759111 /
-    # 40758454581 / 40760593496 : au-delà du 1er device, le daemon
-    # CoreSimulatorService refuse de retrouver le runtime bundle. On
-    # redémarre à fond, et on efface tout device « captures-store-* »
-    # résiduel qu'un échec précédent aurait laissé — le daemon neuf doit
-    # repartir d'un plateau propre.
+    # Entre deux devices (mode « toutes tailles ») : restart agressif.
+    # Non utilisé en mode `ONLY_SIZE` — un seul device par run.
     restart_core_simulator
     cleanup_stale_capture_devices
   fi

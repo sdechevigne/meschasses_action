@@ -208,6 +208,25 @@ PAIRS=(
 )
 LANGS=(fr en)
 
+# Un `simctl install` peut planter en `ipc/mig server died` (code -308,
+# NSMachErrorDomain) quand le démon CoreSimulatorService meurt — ça laisse
+# ensuite les devices suivants dans un état où `simctl boot` échoue avec
+# « cannot determine the runtime bundle » (vécu run 40716075617 : 45 mm et
+# 49 mm perdus en cascade). On force alors un redémarrage du service et on
+# retente une fois avec un boot propre.
+restart_core_simulator() {
+  echo "  🔄 restart CoreSimulatorService (après -308)…"
+  xcrun simctl shutdown all 2>/dev/null || true
+  killall -9 Simulator 2>/dev/null || true
+  # pkill nécessite sudo pour tuer un daemon root ; sur runner GH Actions,
+  # sudo passe sans mot de passe.
+  sudo pkill -9 -f com.apple.CoreSimulator.CoreSimulatorService 2>/dev/null || true
+  sleep 5
+  # Un simctl inoffensif pour forcer launchd à relancer le service.
+  xcrun simctl list devices >/dev/null 2>&1 || true
+  sleep 2
+}
+
 shoot_device() {
   local udid="$1"
   local size_label="$2"
@@ -215,14 +234,28 @@ shoot_device() {
   echo
   echo "### Simulateur $size_label ($udid)"
 
+  # Shutdown de tout avant de démarrer ce device : évite une fuite de
+  # ressources du device précédent et donne au CoreSimulatorService une
+  # pause propre.
+  xcrun simctl shutdown all 2>/dev/null || true
+  sleep 2
+
   if ! boot_device "$udid"; then
     echo "::error::simulateur $size_label indisponible — captures de ce device ignorées"
     return 0
   fi
 
   if ! xcrun simctl install "$udid" "$WATCH_APP_PATH"; then
-    echo "::error::simctl install a échoué pour $size_label — captures ignorées"
-    return 0
+    echo "::warning::simctl install KO pour $size_label — restart CoreSimulatorService + retry"
+    restart_core_simulator
+    if ! boot_device "$udid"; then
+      echo "::error::reboot post-restart impossible — captures de $size_label ignorées"
+      return 0
+    fi
+    if ! xcrun simctl install "$udid" "$WATCH_APP_PATH"; then
+      echo "::error::simctl install KO deux fois pour $size_label — captures ignorées"
+      return 0
+    fi
   fi
 
   for lang in "${LANGS[@]}"; do
@@ -238,9 +271,21 @@ shoot_device() {
             -demo "$demo" \
             -screen "$screen" \
             -AppleLanguages "($lang)" \
-            -AppleLocale "${lang}_FR" >/dev/null; then
-        echo "::warning::launch a échoué pour $out — capture ignorée"
-        continue
+            -AppleLocale "${lang}_FR" 2>/tmp/launch.err >/dev/null; then
+        if grep -q "server died\|code=-308\|cannot determine the runtime" /tmp/launch.err 2>/dev/null; then
+          echo "::warning::CoreSimulatorService mort pendant la série — restart"
+          restart_core_simulator
+          boot_device "$udid" || { echo "::error::reboot impossible, abandon $size_label"; return 0; }
+          xcrun simctl install "$udid" "$WATCH_APP_PATH" || true
+          # Rejoue CETTE capture
+          xcrun simctl launch "$udid" "$BUNDLE_ID" -demo "$demo" -screen "$screen" \
+            -AppleLanguages "($lang)" -AppleLocale "${lang}_FR" >/dev/null 2>&1 || {
+            echo "::warning::launch échoue encore pour $out après restart"; continue;
+          }
+        else
+          echo "::warning::launch a échoué pour $out — capture ignorée"
+          continue
+        fi
       fi
 
       sleep "$WAIT_SECONDS"

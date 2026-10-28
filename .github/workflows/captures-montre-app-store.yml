@@ -1,0 +1,168 @@
+name: Captures montre — App Store
+
+# Captures vitrine de l'app watchOS pour la fiche App Store de « Mes Chasses ».
+# PAS d'envoi à App Store Connect : la montre n'est pas encore embarquée dans
+# les builds TestFlight/store ; les PNG sortent uniquement en artifact
+# (téléchargement manuel ensuite).
+#
+# Même socle que `watch-tests.yml` (checkout monorepo + Expo prebuild
+# `MESCHASSES_WATCH=1` + pod install + xcodebuild Debug `MesChassesWatch`
+# pour `watchsimulator`), puis script `watch-captures-store.sh` qui boote
+# toutes les tailles disponibles sur le runner (Ultra 49 mm, Series 46 mm,
+# Series 45 mm, Series 41 mm) et capture 5 écrans × 2 langues (fr, en) sur
+# la fixture `store` (DemoMode.swift).
+
+on:
+  workflow_dispatch:
+    inputs:
+      monorepo_ref:
+        description: "SHA complet ou branche du monorepo (vide = branche par défaut)"
+        required: false
+        default: ""
+
+permissions: {}
+
+concurrency:
+  group: captures-montre-app-store-${{ inputs.monorepo_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  captures:
+    runs-on: xcode-27
+    timeout-minutes: 110
+    environment: production
+
+    # Mêmes drapeaux que watch-tests.yml : forcer les prebuilt RN pour éviter
+    # une recompilation complète des Pods à chaque run, miroir Maven activé,
+    # cache ReactNative actif.
+    env:
+      RCT_USE_PREBUILT_RNCORE: "1"
+      RCT_USE_RN_DEP: "1"
+      RCT_REACT_NATIVE_MAVEN_MIRROR_ENABLED: "1"
+      RCT_SKIP_CACHES: "0"
+
+    steps:
+      - name: Checkout monorepo
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          repository: ${{ secrets.MONOREPO_REPO }}
+          token: ${{ secrets.CI_PAT_TOKEN }}
+          path: app
+          ref: ${{ inputs.monorepo_ref }}
+
+      - name: Trace du commit testé
+        run: |
+          echo "Commit monorepo : $(git -C app rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Select Xcode 27.1
+        run: |
+          XCODE_PATH=/Applications/Xcode_27.1.app
+          [ -d "$XCODE_PATH" ] || { echo "::error::Xcode 27.1 introuvable ($XCODE_PATH)"; exit 1; }
+          sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
+          xcodebuild -version | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4 (Node 20)
+        with:
+          version: 9
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: app/pnpm-lock.yaml
+
+      # Mêmes clés de cache que watch-tests.yml : on partage le pod + le
+      # dossier `~/Library/Caches/ReactNative`, ce qui tient entre les deux
+      # workflows et accélère ce job dès le 2e run.
+      - name: Cache CocoaPods
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cocoapods
+            ~/Library/Caches/CocoaPods
+          key: pods-watch-${{ runner.os }}-${{ hashFiles('app/pnpm-lock.yaml') }}
+          restore-keys: pods-watch-${{ runner.os }}-
+
+      - name: Cache React Native prebuilt artifacts
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/Library/Caches/ReactNative
+          key: rn-prebuilt-${{ runner.os }}-${{ hashFiles('app/pnpm-lock.yaml') }}
+          restore-keys: |
+            rn-prebuilt-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: cd app && pnpm install --frozen-lockfile
+
+      - name: Expo prebuild (iOS, MESCHASSES_WATCH=1)
+        working-directory: app/apps/mobile
+        env:
+          MESCHASSES_WATCH: "1"
+          EXPO_NO_CAPABILITY_SYNC: "1"
+        run: |
+          npx expo prebuild --platform ios --no-install --non-interactive --clean
+
+      - name: pod install
+        working-directory: app/apps/mobile/ios
+        run: |
+          set -o pipefail
+          for i in 1 2 3; do
+            if pod install; then
+              echo "pod install OK à la tentative $i" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            echo "pod install a échoué (tentative $i/3), nouvelle tentative dans 30s..."
+            sleep 30
+          done
+          echo "::error::pod install a échoué 3 fois (voir logs plus haut : CDN RN)"
+          exit 1
+
+      # On ne compile QUE l'app montre (pas les complications, pas les Pods
+      # RN inutiles ici) — même raison que watch-tests.yml : le scheme
+      # trimballerait tout le projet.
+      - name: xcodebuild build — MesChassesWatch (app montre, Debug)
+        working-directory: app/apps/mobile/ios
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project MesChasses.xcodeproj \
+            -target MesChassesWatch \
+            -configuration Debug \
+            -sdk watchsimulator \
+            -skipPackagePluginValidation \
+            SYMROOT="$PWD/build-app" \
+            OBJROOT="$PWD/build-app/obj" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY= \
+            build 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" | tail -200
+
+      # Scripts CI de CE repo (public).
+      - name: Checkout scripts CI
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          path: ci
+
+      # 5 écrans × 2 langues × N tailles disponibles (jusqu'à 4). Borne dure
+      # à 40 min : chaque appareil prend ~5-7 min boot/install compris.
+      - name: Captures simulateur watchOS pour App Store
+        working-directory: app/apps/mobile/ios
+        timeout-minutes: 40
+        env:
+          WATCH_APP_PATH: ${{ github.workspace }}/app/apps/mobile/ios/build-app/Debug-watchsimulator/MesChassesWatch.app
+          OUTDIR: ${{ github.workspace }}/watch-captures-app-store
+        run: bash "${{ github.workspace }}/ci/.github/scripts/watch-captures-store.sh"
+
+      - name: Upload artifact watch-captures-app-store
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: watch-captures-app-store
+          path: watch-captures-app-store/*
+          if-no-files-found: error
+          retention-days: 30

@@ -27,24 +27,19 @@
 #   - WATCH_APP_PATH : chemin absolu vers MesChassesWatch.app Debug déjà bâti.
 #   - OUTDIR (défaut : watch-captures-store)
 #
-# Le script s'inspire fortement du script `watch-captures.sh` existant (même
-# détection runtime, même robust boot, même restart CoreSimulatorService
-# après -308) — fusionner serait possible plus tard, pour l'instant on garde
-# les deux séparés pour ne RIEN changer au comportement du contrôle de
-# non-régression (watch-tests.yml).
+# Structure volontairement proche de `watch-captures.sh` (watch-tests.yml) :
+# création des devices en têtes, aucun restart agressif de
+# `CoreSimulatorService` entre eux. Les runs 40768506954 / 40772340007 ont
+# montré que redémarrer le daemon flushe le runtime watchOS → tous les boots
+# suivants deviennent impossibles. Mieux vaut quelques tailles qui passent
+# qu'une tentative de « tout avoir » qui tombe partout.
 
-# set -u pose des bugs sur des manipulations de tableaux vides en bash 3.2
-# (ancien bash macOS système). On ne garde que pipefail — les variables
-# nécessaires sont vérifiées à la main en tête de script.
 set -o pipefail
 
 : "${WATCH_APP_PATH:?variable WATCH_APP_PATH manquante — chemin vers MesChassesWatch.app}"
 OUTDIR="${OUTDIR:-watch-captures-store}"
 BUNDLE_ID="com.meschasses.watchkitapp"
 WAIT_SECONDS="${WAIT_SECONDS:-5}"
-# Si définie, ne traite qu'une seule taille (ex. ONLY_SIZE=49mm-ultra). Pensée
-# pour le workflow qui lance 1 job par taille via `strategy.matrix`.
-ONLY_SIZE="${ONLY_SIZE:-}"
 # Attente supplémentaire après `simctl location set` pour que CoreLocation
 # propage la position avant la capture `post`.
 LOCATION_SETTLE_SECONDS="${LOCATION_SETTLE_SECONDS:-6}"
@@ -80,11 +75,7 @@ fi
 echo "Runtime watchOS retenu : $WATCH_RUNTIME"
 
 # ---------------------------------------------------------------------------
-# 2) Liste des device types watchOS disponibles. On essaie, dans l'ordre :
-#    - Ultra 49 mm (le plus grand, retenu par App Store Connect)
-#    - Series 46 mm (10/11 « grand »)
-#    - Series 45 mm (série 7-9)
-#    - Series 41/42 mm (série 7-9 petit)
+# 2) Choix des device types (Ultra 49, Series 46, 45, 41/42).
 # ---------------------------------------------------------------------------
 ALL_WATCH_TYPES=$(xcrun simctl list devicetypes -j | \
   node -e '(() => {
@@ -111,7 +102,6 @@ TYPE_45=$(pick_device_type '45mm')
 TYPE_41=$(pick_device_type '41mm')
 TYPE_42=$(pick_device_type '42mm')
 
-# Replis si une taille absente : on prend la plus proche.
 [[ -z "$TYPE_49" ]] && TYPE_49=$(pick_device_type 'Ultra')
 [[ -z "$TYPE_41" ]] && TYPE_41="$TYPE_42"
 
@@ -120,25 +110,58 @@ echo "Device type Series 46 mm = ${TYPE_46:-(aucun)}"
 echo "Device type Series 45 mm = ${TYPE_45:-(aucun)}"
 echo "Device type Series 41/42 mm = ${TYPE_41:-(aucun)}"
 
-# Pool des tailles à capturer. On ne CRÉE PAS encore les devices : chaque
-# device est créé juste avant son tour, et détruit après sa série. C'est le
-# seul moyen fiable d'éviter que `CoreSimulatorService` reparte sans
-# retrouver le runtime bundle de devices créés avant son redémarrage (vécu
-# runs 40755759111 + 40758454581 : les devices créés avant le 1er restart
-# refusent de booter après — « cannot determine the runtime bundle »).
-POOL=()  # paires "label:type_id" — type_id peut être vide, on skip alors
-POOL+=("49mm-ultra:$TYPE_49")
-POOL+=("46mm:$TYPE_46")
-POOL+=("45mm:$TYPE_45")
-POOL+=("41mm:$TYPE_41")
+# ---------------------------------------------------------------------------
+# 3) Création des devices TOUT DE SUITE. Pas de restart du daemon ensuite :
+#    tant qu'on ne le tue pas, il garde le lien aux runtime bundles. Même
+#    stratégie que watch-captures.sh (watch-tests.yml), qui tourne 3 tailles
+#    sans problème sur le même runner.
+# ---------------------------------------------------------------------------
+DEVICES=()
+ATTEMPTED=()
 
-# Trace des devices à nettoyer en sortie (ceux qu'on a créés et pas encore
-# supprimés — en pratique au plus 1 à la fois).
-CREATED_UDIDS=()
+create_device_if_available() {
+  local label="$1"
+  local type_id="$2"
+  if [[ -z "$type_id" ]]; then
+    echo "- $label : device type absent sur le runner, ignoré"
+    return
+  fi
+  local name="captures-store-$label"
+  local existing
+  existing=$(xcrun simctl list devices -j | \
+    node -e '(() => {
+      const n = process.argv[1], t = process.argv[2];
+      const d = JSON.parse(require("fs").readFileSync(0,"utf8")).devices || {};
+      for (const k of Object.keys(d)) for (const dev of d[k]) {
+        if (dev.name === n && (dev.deviceTypeIdentifier === t || k.endsWith(t))) {
+          process.stdout.write(dev.udid); return;
+        }
+      }
+    })()' "$name" "$type_id" || true)
+  local udid
+  if [[ -n "$existing" ]]; then
+    udid="$existing"
+  else
+    udid=$(xcrun simctl create "$name" "$type_id" "$WATCH_RUNTIME")
+  fi
+  echo "- $label : $udid"
+  DEVICES+=("$label:$udid")
+  ATTEMPTED+=("$label")
+}
+
+create_device_if_available "49mm-ultra" "$TYPE_49"
+create_device_if_available "46mm"       "$TYPE_46"
+create_device_if_available "45mm"       "$TYPE_45"
+create_device_if_available "41mm"       "$TYPE_41"
+
+if [[ ${#DEVICES[@]} -eq 0 ]]; then
+  echo "::error::Aucune taille de montre disponible sur le runner."
+  exit 1
+fi
 
 cleanup() {
-  [[ ${#CREATED_UDIDS[@]} -eq 0 ]] && return
-  for u in "${CREATED_UDIDS[@]}"; do
+  for pair in "${DEVICES[@]}"; do
+    local u="${pair#*:}"
     [[ -z "$u" ]] && continue
     xcrun simctl shutdown "$u" 2>/dev/null || true
     xcrun simctl delete "$u" 2>/dev/null || true
@@ -147,8 +170,8 @@ cleanup() {
 trap cleanup EXIT
 
 # ---------------------------------------------------------------------------
-# 3) Boot robuste (repris de watch-captures.sh : bootstatus borné à 180 s,
-#    retry après -308, restart CoreSimulatorService si besoin).
+# 4) Boot borné + restart du daemon seulement en dernier recours (install KO
+#    avec -308 ou code=45 du simulateur). Même logique que watch-captures.sh.
 # ---------------------------------------------------------------------------
 BOOTSTATUS_TIMEOUT="${BOOTSTATUS_TIMEOUT:-180}"
 
@@ -157,10 +180,7 @@ boot_device() {
   for attempt in 1 2 3; do
     xcrun simctl shutdown "$udid" 2>/dev/null || true
     sleep 1
-    xcrun simctl boot "$udid" >/tmp/boot.err 2>&1 || true
-    # On loggue la sortie de boot pour garder la traçabilité qu'avait le
-    # pipeline direct précédent (`xcrun simctl boot "$udid" 2>&1`).
-    [[ -s /tmp/boot.err ]] && sed 's/^/    /' /tmp/boot.err
+    xcrun simctl boot "$udid" 2>/dev/null || true
 
     local statfile="/tmp/bootstatus.$$.$attempt"
     xcrun simctl bootstatus "$udid" -b >"$statfile" 2>&1 &
@@ -189,13 +209,6 @@ boot_device() {
     if [[ "$state" == "Booted" ]]; then
       return 0
     fi
-    # Si le boot a échoué sur « cannot determine the runtime bundle » (ou
-    # un équivalent -308), le CoreSimulatorService est en vrac — redémarrer
-    # avant la prochaine tentative. Sinon, simple reboot.
-    if grep -q "cannot determine the runtime\|server died\|code=-308\|runtime bundle" /tmp/boot.err 2>/dev/null; then
-      echo "  CoreSimulatorService semble mort pendant le boot — restart avant retry"
-      restart_core_simulator
-    fi
     echo "  reboot (tentative $attempt/3)…"
     sleep 2
   done
@@ -209,46 +222,12 @@ restart_core_simulator() {
   killall -9 Simulator 2>/dev/null || true
   sudo pkill -9 -f com.apple.CoreSimulator.CoreSimulatorService 2>/dev/null || true
   sleep 5
-  # Deux appels inoffensifs qui forcent launchd à relancer le service, et
-  # réchauffent la découverte des runtimes avant la prochaine création —
-  # sans cette double sollicitation, le 1er `simctl create` qui suit butait
-  # parfois sur « cannot determine the runtime bundle » (runs 40755759111
-  # & 40758454581).
-  xcrun simctl list runtimes >/dev/null 2>&1 || true
   xcrun simctl list devices >/dev/null 2>&1 || true
   sleep 2
 }
 
-# Supprime tous les devices nommés `captures-store-*` qui pourraient rester
-# d'une exécution précédente (crash, timeout, cleanup partiel). Évite qu'un
-# runtime bundle fantôme ne pollue l'inventaire du nouveau daemon.
-cleanup_stale_capture_devices() {
-  local stale
-  stale=$(xcrun simctl list devices -j 2>/dev/null | \
-    node -e '(() => {
-      try {
-        const d = JSON.parse(require("fs").readFileSync(0,"utf8")).devices || {};
-        for (const k of Object.keys(d)) for (const dev of d[k]) {
-          if (dev.name && dev.name.startsWith("captures-store-")) {
-            process.stdout.write(dev.udid + "\n");
-          }
-        }
-      } catch (_) {}
-    })()' 2>/dev/null || true)
-  if [[ -n "$stale" ]]; then
-    echo "  🧹 nettoyage des devices captures-store-* orphelins…"
-    while IFS= read -r udid; do
-      [[ -z "$udid" ]] && continue
-      xcrun simctl shutdown "$udid" 2>/dev/null || true
-      xcrun simctl delete "$udid" 2>/dev/null || true
-    done <<< "$stale"
-  fi
-}
-
 # ---------------------------------------------------------------------------
-# 4) Matrice de captures.
-#    6 écrans par (device × langue), tous sur la fixture `store`.
-#    L'ordre numérique guide la lecture dans l'artifact et App Store Connect.
+# 5) Matrice de captures : 6 écrans × 2 langues sur fixture `store`.
 # ---------------------------------------------------------------------------
 # Format : "numéro écran [extra]" — `extra` peut être `located` (= set
 # location + `-demoHeading`).
@@ -263,19 +242,13 @@ SHOTS=(
 LANGS=(fr en)
 
 # Coordonnées du 1er poste de la fixture `store` (voir DemoMode.swift) :
-# 47.2180, -1.5530. Position du simulateur ~150 m au nord-nord-est :
-# +0.0012° lat ≈ 133 m, +0.0005° lng ≈ 38 m → distance ≈ 138 m.
-# Cap du simulateur vers le poste : azimut ≈ 196° (SSW), on arrondit à
-# 200° pour une flèche nettement orientée vers le bas-gauche.
-POST_LAT="47.2180"
-POST_LNG="-1.5530"
+# 47.2180, -1.5530. Position du simulateur ~150 m au nord-nord-est. Cap du
+# simulateur vers le poste : ≈ 196° (SSW), on arrondit à 200° pour une
+# flèche nettement orientée.
 SIM_LAT="47.2192"
 SIM_LNG="-1.5525"
 DEMO_HEADING="200"
 
-# ---------------------------------------------------------------------------
-# 5) Capture d'un device.
-# ---------------------------------------------------------------------------
 shoot_device() {
   local udid="$1"
   local size_label="$2"
@@ -291,9 +264,7 @@ shoot_device() {
     return 0
   fi
 
-  if xcrun simctl install "$udid" "$WATCH_APP_PATH" 2>/tmp/install.err; then
-    echo "  simctl install OK ($WATCH_APP_PATH)"
-  else
+  if ! xcrun simctl install "$udid" "$WATCH_APP_PATH" 2>/tmp/install.err; then
     echo "::warning::simctl install KO pour $size_label :"
     sed 's/^/    /' /tmp/install.err || true
     echo "  → restart CoreSimulatorService + retry"
@@ -302,15 +273,14 @@ shoot_device() {
       echo "::error::reboot post-restart impossible — captures de $size_label ignorées"
       return 0
     fi
-    if ! xcrun simctl install "$udid" "$WATCH_APP_PATH" 2>/tmp/install.err; then
-      echo "::error::simctl install KO deux fois pour $size_label :"
-      sed 's/^/    /' /tmp/install.err || true
+    if ! xcrun simctl install "$udid" "$WATCH_APP_PATH"; then
+      echo "::error::simctl install KO deux fois pour $size_label — captures ignorées"
       return 0
     fi
   fi
 
-  # Autorisation location pour l'écran `post` (grant une seule fois, suffisant
-  # pour toute la série : la permission reste tant que le device vit).
+  # Autorisation location pour l'écran `post` (une fois, suffisant pour
+  # toute la série : la permission reste tant que le device vit).
   if xcrun simctl privacy "$udid" grant location "$BUNDLE_ID" 2>/tmp/privacy.err; then
     echo "  Location grant OK"
   else
@@ -318,14 +288,8 @@ shoot_device() {
     sed 's/^/    /' /tmp/privacy.err || true
   fi
 
-  # Pas de tentative de forcer l'heure de la barre d'état : `simctl status_bar
-  # override` n'est pas supporté sur watchOS (code 45, « Status bar overrides
-  # not supported on this platform » — confirmé runs 40755759111 à 40762138075).
-  # L'heure visible est l'heure réelle du simulateur ; on ne la truque pas.
-
   for lang in "${LANGS[@]}"; do
     for shot in "${SHOTS[@]}"; do
-      # shot = "nn screen [extra]"
       read -r shot_num shot_screen shot_extra <<<"$shot"
       shot_extra="${shot_extra:-}"
       local out="$OUTDIR/${size_label}-${lang}-${shot_num}-${shot_screen}.png"
@@ -333,41 +297,24 @@ shoot_device() {
 
       xcrun simctl terminate "$udid" "$BUNDLE_ID" 2>/dev/null || true
 
-      # Si l'écran demande la location, on la pose AVANT le lancement et on
-      # attend que CoreLocation ait propagé.
       if [[ "$shot_extra" == "located" ]]; then
         xcrun simctl location "$udid" set "$SIM_LAT,$SIM_LNG" 2>/dev/null || \
           echo "  ⚠️ simctl location set a échoué (continué quand même)"
       fi
 
-      # Arguments de lancement. L'écran `post` (= `located`) reçoit un cap
-      # simulé via `-demoHeading` (consommé par `LocationBridge.start()` sous
-      # `#if DEBUG` dans PostView.swift) pour que la flèche de guidage parte
-      # orientée naturellement, sans la mention « Nord en haut » qu'un vrai
-      # Apple Watch n'affiche jamais quand sa boussole fonctionne.
+      # L'écran `post` reçoit un cap simulé via `-demoHeading` : la
+      # flèche part orientée naturellement, et `LocationBridge` masque
+      # alors la mention « Nord en haut » (comportement Debug uniquement).
+      local -a launch_args
       launch_args=(-demo store -screen "$shot_screen" -AppleLanguages "($lang)" -AppleLocale "${lang}_FR")
       if [[ "$shot_extra" == "located" ]]; then
         launch_args+=(-demoHeading "$DEMO_HEADING")
       fi
 
-      # Si le device s'est éteint (code=405, « Unable to lookup in current
-      # state: Shutdown »), on le re-boote et on réinstalle avant de
-      # relancer. Vécu run 40768506954 : le device Ultra 49mm partait
-      # Shutdown après le 1er launch sans qu'on sache pourquoi (ni crash,
-      # ni timeout) → sans reboot, toute la série était perdue.
       if ! xcrun simctl launch "$udid" "$BUNDLE_ID" "${launch_args[@]}" 2>/tmp/launch.err >/dev/null; then
         echo "    launch.err :"
         sed 's/^/      /' /tmp/launch.err || true
-        if grep -q "current state: Shutdown\|code=405" /tmp/launch.err 2>/dev/null; then
-          echo "::warning::device shutdown entre deux lancements — reboot"
-          boot_device "$udid" || { echo "::error::reboot impossible, abandon $size_label"; return 0; }
-          xcrun simctl install "$udid" "$WATCH_APP_PATH" || true
-          xcrun simctl privacy "$udid" grant location "$BUNDLE_ID" 2>/dev/null || true
-          [[ "$shot_extra" == "located" ]] && xcrun simctl location "$udid" set "$SIM_LAT,$SIM_LNG" 2>/dev/null || true
-          xcrun simctl launch "$udid" "$BUNDLE_ID" "${launch_args[@]}" >/dev/null 2>&1 || {
-            echo "::warning::launch échoue encore pour $out après reboot"; continue;
-          }
-        elif grep -q "server died\|code=-308\|cannot determine the runtime" /tmp/launch.err 2>/dev/null; then
+        if grep -q "server died\|code=-308\|cannot determine the runtime" /tmp/launch.err 2>/dev/null; then
           echo "::warning::CoreSimulatorService mort — restart"
           restart_core_simulator
           boot_device "$udid" || { echo "::error::reboot impossible, abandon $size_label"; return 0; }
@@ -376,6 +323,15 @@ shoot_device() {
           [[ "$shot_extra" == "located" ]] && xcrun simctl location "$udid" set "$SIM_LAT,$SIM_LNG" 2>/dev/null || true
           xcrun simctl launch "$udid" "$BUNDLE_ID" "${launch_args[@]}" >/dev/null 2>&1 || {
             echo "::warning::launch échoue encore pour $out après restart"; continue;
+          }
+        elif grep -q "current state: Shutdown\|code=405" /tmp/launch.err 2>/dev/null; then
+          echo "::warning::device shutdown entre deux lancements — reboot"
+          boot_device "$udid" || { echo "::error::reboot impossible, abandon $size_label"; return 0; }
+          xcrun simctl install "$udid" "$WATCH_APP_PATH" || true
+          xcrun simctl privacy "$udid" grant location "$BUNDLE_ID" 2>/dev/null || true
+          [[ "$shot_extra" == "located" ]] && xcrun simctl location "$udid" set "$SIM_LAT,$SIM_LNG" 2>/dev/null || true
+          xcrun simctl launch "$udid" "$BUNDLE_ID" "${launch_args[@]}" >/dev/null 2>&1 || {
+            echo "::warning::launch échoue encore pour $out après reboot"; continue;
           }
         else
           echo "::warning::launch a échoué pour $out — capture ignorée"
@@ -394,8 +350,6 @@ shoot_device() {
         continue
       fi
 
-      # Loggue la taille réelle de l'image (traçabilité App Store Connect :
-      # chaque appareil watchOS a sa taille attendue).
       if command -v sips >/dev/null 2>&1; then
         local w h
         w=$(sips -g pixelWidth "$out" 2>/dev/null | awk '/pixelWidth/{print $2}')
@@ -407,71 +361,25 @@ shoot_device() {
   done
 }
 
-# Pour chaque taille du pool : restart propre du daemon, création d'un
-# device neuf (associé au daemon tout juste redémarré), capture, puis
-# destruction immédiate du device avant de passer au suivant.
-#
-# `ATTEMPTED` liste les tailles qu'on A réellement tentées (type disponible
-# sur le runner) — c'est le périmètre du contrôle final de complétude. Si
-# une taille y entre, ses 12 PNG (6 écrans × 2 langues) doivent exister.
-ATTEMPTED=()
-
-first=1
-for pair in "${POOL[@]}"; do
+for pair in "${DEVICES[@]}"; do
   label="${pair%%:*}"
-  type_id="${pair#*:}"
-  # Mode « 1 taille à la fois » : on ignore tout ce qui ne correspond pas.
-  if [[ -n "$ONLY_SIZE" && "$label" != "$ONLY_SIZE" ]]; then
-    continue
-  fi
-  if [[ -z "$type_id" ]]; then
-    echo "- $label : device type absent, taille ignorée"
-    continue
-  fi
-  if (( first == 0 )); then
-    # Entre deux devices (mode « toutes tailles ») : restart agressif.
-    # Non utilisé en mode `ONLY_SIZE` — un seul device par run.
-    restart_core_simulator
-    cleanup_stale_capture_devices
-  fi
-  first=0
-  name="captures-store-$label-$$"
-  echo
-  echo "## $label : création d'un device neuf ($type_id)"
-  udid=$(xcrun simctl create "$name" "$type_id" "$WATCH_RUNTIME")
-  echo "UDID = $udid"
-  CREATED_UDIDS+=("$udid")
-  ATTEMPTED+=("$label")
+  udid="${pair#*:}"
   shoot_device "$udid" "$label"
-  # Suppression immédiate pour alléger le pool avant le device suivant.
-  xcrun simctl shutdown "$udid" 2>/dev/null || true
-  xcrun simctl delete "$udid" 2>/dev/null || true
-  # Retirer de la liste de cleanup (déjà détruit).
-  NEW_CREATED=()
-  if [[ ${#CREATED_UDIDS[@]} -gt 0 ]]; then
-    for u in "${CREATED_UDIDS[@]}"; do
-      [[ "$u" != "$udid" ]] && NEW_CREATED+=("$u")
-    done
-  fi
-  CREATED_UDIDS=()
-  if [[ ${#NEW_CREATED[@]} -gt 0 ]]; then
-    CREATED_UDIDS=("${NEW_CREATED[@]}")
-  fi
 done
 
 # ---------------------------------------------------------------------------
 # 6) Vérifications finales.
 #    - Chaque taille présente dans `ATTEMPTED` doit avoir TOUTES ses captures
 #      (6 écrans × 2 langues = 12 PNG) — sinon ::error:: + exit 1.
-#    - Deux captures d'écrans DIFFÉRENTS de la même langue × device ne doivent
-#      PAS être identiques (SHA256) : empêche un fallback silencieux ou un
+#    - Deux écrans distincts (home ≠ hunt, hunt ≠ huntActions, etc.) ne
+#      peuvent pas être identiques : empêche un fallback silencieux ou un
 #      crash qui laisserait la montre sur l'accueil pour chaque écran.
 # ---------------------------------------------------------------------------
 echo
 echo "## Vérification des captures"
 echo "Tailles tentées : ${ATTEMPTED[*]:-aucune}"
 if [[ ${#ATTEMPTED[@]} -eq 0 ]]; then
-  echo "::error::Aucune taille n'a été tentée (le pool est vide)."
+  echo "::error::Aucune taille n'a été tentée."
   exit 1
 fi
 
@@ -506,13 +414,10 @@ fi
 sha_of() { shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'; }
 
 echo
-echo "## Contrôle d'empreintes (SHA256) — deux écrans ≠ ne peuvent pas être identiques"
+echo "## Contrôle d'empreintes (SHA256)"
 dup_screen=0
 for size_label in "${ATTEMPTED[@]}"; do
   for lang in "${LANGS[@]}"; do
-    # Chaque écran de détail (hunt, huntActions, post, card, permit) doit
-    # différer de l'accueil : empêche un fallback silencieux ou un crash
-    # qui laisserait la montre sur l'accueil pour chaque écran.
     for shot in "${SHOTS[@]}"; do
       read -r shot_num shot_screen _ <<<"$shot"
       [[ "$shot_num" == "01" ]] && continue
@@ -524,9 +429,6 @@ for size_label in "${ATTEMPTED[@]}"; do
         dup_screen=$((dup_screen+1))
       fi
     done
-    # Et hunt (02) doit différer de huntActions (03) : si l'écran défilé est
-    # identique à l'écran de tête, c'est que le ScrollViewReader n'a pas
-    # scrollé (régression DemoMode ou Debug coupé).
     hunt="$OUTDIR/${size_label}-${lang}-02-hunt.png"
     hunt_actions="$OUTDIR/${size_label}-${lang}-03-huntActions.png"
     if [[ -s "$hunt" && -s "$hunt_actions" ]]; then
@@ -538,10 +440,10 @@ for size_label in "${ATTEMPTED[@]}"; do
   done
 done
 
-echo "Doublons détail=home : $dup_screen"
+echo "Doublons : $dup_screen"
 
 if [[ "$missing" -gt 0 || "$too_small" -gt 0 || "$dup_screen" -gt 0 ]]; then
-  echo "::error::échec contrôle captures (manquantes=$missing, suspectes=$too_small, détail=home=$dup_screen)"
+  echo "::error::échec contrôle captures (manquantes=$missing, suspectes=$too_small, doublons=$dup_screen)"
   exit 1
 fi
 

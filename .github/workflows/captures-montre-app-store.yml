@@ -5,19 +5,22 @@ name: Captures montre — App Store
 # les builds TestFlight/store ; les PNG sortent uniquement en artifact
 # (téléchargement manuel ensuite).
 #
-# Structure en 2 étages :
-#   1. `build` : compile une seule fois l'app watchOS Debug (watchsimulator),
-#      publie `MesChassesWatch.app` en artifact entre jobs.
-#   2. `shoot` : matrice par taille de montre, un runner macOS FRAIS par
-#      taille. Chaque matrice télécharge l'app pré-bâtie et lance le script
-#      `watch-captures-store.sh` avec `ONLY_SIZE=<taille>`.
+# Un seul job sur un runner macOS : même socle que `watch-tests.yml`
+# (checkout monorepo + Expo prebuild `MESCHASSES_WATCH=1` + pod install +
+# xcodebuild Debug `MesChassesWatch` pour `watchsimulator`), puis script
+# `watch-captures-store.sh` qui essaie successivement toutes les tailles
+# disponibles sur le runner (Ultra 49 mm, Series 46 mm, Series 45 mm,
+# Series 41 mm) et prend 6 écrans × 2 langues (fr, en) sur la fixture
+# `store` (DemoMode.swift).
 #
-# Pourquoi la matrice : runs 40755759111 → 40765721013 ont montré qu'un
-# même runner ne peut traiter de façon fiable qu'UN SEUL device watchOS —
-# le CoreSimulatorService perd le lien aux runtime bundles après le 1er
-# cycle, et aucun redémarrage de daemon ne le ramène proprement (le runtime
-# devient « Invalid runtime »). Avec un runner frais par taille, chaque
-# capture a son CoreSimulatorService neuf, pas de contamination.
+# Historique :
+# - Un refactor en matrice (1 job par taille) a été tenté (runs 40768506954
+#   & 40772340007) : chaque matrice tombait en « runtime watchOS indisponible »
+#   ou « cannot determine the runtime bundle » après la 1re install, et
+#   aucune parade n'a tenu. Un job mono-runner multi-tailles (comme
+#   watch-tests.yml) reste la configuration qui marche le mieux ; il livre
+#   au moins 2 tailles proprement (Ultra 49 mm + Series 46 mm), c'est déjà
+#   ce que l'App Store Connect exige.
 
 on:
   workflow_dispatch:
@@ -34,15 +37,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # ---------------------------------------------------------------------------
-  # Étage 1 : compilation de l'app watchOS Debug. Même socle que
-  # `watch-tests.yml` (checkout monorepo, Expo prebuild MESCHASSES_WATCH=1,
-  # pod install, xcodebuild Debug de MesChassesWatch), suivi d'un
-  # upload-artifact de l'application.
-  # ---------------------------------------------------------------------------
-  build:
+  captures:
     runs-on: xcode-27
-    timeout-minutes: 90
+    timeout-minutes: 110
     environment: production
 
     env:
@@ -145,85 +142,25 @@ jobs:
             CODE_SIGN_IDENTITY= \
             build 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" | tail -200
 
-      # Upload de MesChassesWatch.app pour que les jobs `shoot` ne refassent
-      # pas le build. On passe par `ditto --sequesterRsrc` : zip classique
-      # perd des attributs étendus (xattr) et des symboles de signature
-      # SimulatorAwareInfo que le simulateur refuse à l'install (run
-      # 40768506954 : premier launch sortait silencieusement, device
-      # passait Shutdown dès le 1er screenshot). `ditto -c -k` produit une
-      # archive compatible avec les app bundles .app.
-      - name: Zip MesChassesWatch.app (ditto)
-        working-directory: app/apps/mobile/ios/build-app/Debug-watchsimulator
-        run: ditto -c -k --keepParent --sequesterRsrc MesChassesWatch.app "$GITHUB_WORKSPACE/MesChassesWatch.app.zip"
-
-      - name: Upload artifact MesChassesWatch.app
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: watch-app-debug
-          path: MesChassesWatch.app.zip
-          if-no-files-found: error
-          retention-days: 1
-
-  # ---------------------------------------------------------------------------
-  # Étage 2 : capture, une matrice par taille → un runner macOS frais par
-  # device. Chaque matrice reconstruit un simulateur unique de SA taille et
-  # exécute `watch-captures-store.sh` avec `ONLY_SIZE=<label>` : le script
-  # saute toutes les autres tailles. Le runner frais garantit un
-  # CoreSimulatorService propre, condition observée nécessaire au bon boot.
-  # ---------------------------------------------------------------------------
-  shoot:
-    needs: build
-    runs-on: xcode-27
-    timeout-minutes: 25
-    strategy:
-      fail-fast: false
-      matrix:
-        size: [49mm-ultra, 46mm, 45mm, 41mm]
-
-    steps:
-      - name: Select Xcode 27.1
-        run: |
-          XCODE_PATH=/Applications/Xcode_27.1.app
-          [ -d "$XCODE_PATH" ] || { echo "::error::Xcode 27.1 introuvable ($XCODE_PATH)"; exit 1; }
-          sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
-          xcodebuild -version
-
       - name: Checkout scripts CI
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
           path: ci
 
-      - name: Download MesChassesWatch.app
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: watch-app-debug
-          path: ${{ github.workspace }}/app-zip
-
-      - name: Unzip app (ditto)
-        run: |
-          mkdir -p "$GITHUB_WORKSPACE/app-bundle"
-          ditto -x -k "$GITHUB_WORKSPACE/app-zip/MesChassesWatch.app.zip" "$GITHUB_WORKSPACE/app-bundle"
-          ls -la "$GITHUB_WORKSPACE/app-bundle/MesChassesWatch.app" | head -8
-          echo "Executable existe :"
-          test -f "$GITHUB_WORKSPACE/app-bundle/MesChassesWatch.app/MesChassesWatch" && echo "  oui ($(stat -f%z "$GITHUB_WORKSPACE/app-bundle/MesChassesWatch.app/MesChassesWatch") octets)" || echo "  NON"
-
-      - name: Captures taille ${{ matrix.size }}
-        timeout-minutes: 20
+      - name: Captures simulateur watchOS pour App Store
+        working-directory: app/apps/mobile/ios
+        timeout-minutes: 50
         env:
-          WATCH_APP_PATH: ${{ github.workspace }}/app-bundle/MesChassesWatch.app
+          WATCH_APP_PATH: ${{ github.workspace }}/app/apps/mobile/ios/build-app/Debug-watchsimulator/MesChassesWatch.app
           OUTDIR: ${{ github.workspace }}/watch-captures-app-store
-          ONLY_SIZE: ${{ matrix.size }}
         run: bash "${{ github.workspace }}/ci/.github/scripts/watch-captures-store.sh"
 
-      - name: Upload artifact watch-captures-app-store (${{ matrix.size }})
+      - name: Upload artifact watch-captures-app-store
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          # Un artifact par taille → le téléchargement local les concatène.
-          # `watch-captures-app-store-<taille>` au lieu d'un dossier commun :
-          # upload-artifact v4 interdit l'écriture concurrente sur un même nom.
-          name: watch-captures-app-store-${{ matrix.size }}
+          name: watch-captures-app-store
           path: watch-captures-app-store/*
           if-no-files-found: error
           retention-days: 30

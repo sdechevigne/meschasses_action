@@ -176,7 +176,7 @@ boot_device() {
   for attempt in 1 2 3; do
     xcrun simctl shutdown "$udid" 2>/dev/null || true
     sleep 1
-    xcrun simctl boot "$udid" 2>/dev/null || true
+    xcrun simctl boot "$udid" 2>/tmp/boot.err || true
 
     local statfile="/tmp/bootstatus.$$.$attempt"
     xcrun simctl bootstatus "$udid" -b >"$statfile" 2>&1 &
@@ -204,6 +204,13 @@ boot_device() {
     echo "  state après tentative $attempt = $state"
     if [[ "$state" == "Booted" ]]; then
       return 0
+    fi
+    # Si le boot a échoué sur « cannot determine the runtime bundle » (ou
+    # un équivalent -308), le CoreSimulatorService est en vrac — redémarrer
+    # avant la prochaine tentative. Sinon, simple reboot.
+    if grep -q "cannot determine the runtime\|server died\|code=-308\|runtime bundle" /tmp/boot.err 2>/dev/null; then
+      echo "  CoreSimulatorService semble mort pendant le boot — restart avant retry"
+      restart_core_simulator
     fi
     echo "  reboot (tentative $attempt/3)…"
     sleep 2
@@ -358,9 +365,19 @@ shoot_device() {
   done
 }
 
+# Restart CoreSimulatorService entre chaque appareil : le daemon fuit après
+# un cycle complet boot/install/launch×N/screenshot et finit par refuser le
+# device suivant avec « cannot determine the runtime bundle » (vécu run
+# 40755759111 : 49mm + 46mm OK, 45mm + 41mm KO). On préfère payer un restart
+# propre entre chaque device plutôt que perdre la moitié des captures.
+first=1
 for pair in "${DEVICES[@]}"; do
   label="${pair%%:*}"
   udid="${pair#*:}"
+  if (( first == 0 )); then
+    restart_core_simulator
+  fi
+  first=0
   shoot_device "$udid" "$label"
 done
 

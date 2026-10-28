@@ -133,10 +133,25 @@ jobs:
         run: |
           npx expo prebuild --platform ios --no-install --non-interactive --clean
 
+      # pod install : récurrence d'un échec curl HTTP/2 sur
+      # repo.reactnative.dev (téléchargement de react-native-artifacts) et sur
+      # un pod React-Core-prebuilt (CDN GitHub). Transitoire — on retente
+      # jusqu'à 3 fois avec une attente, plutôt que de faire tomber le job
+      # entier pour une erreur réseau.
       - name: pod install
         working-directory: app/apps/mobile/ios
         run: |
-          pod install --repo-update
+          set -o pipefail
+          for i in 1 2 3; do
+            if pod install --repo-update; then
+              echo "pod install OK au tentative $i" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            echo "pod install a échoué (tentative $i/3), nouvelle tentative dans 30s..."
+            sleep 30
+          done
+          echo "::error::pod install a échoué 3 fois (voir logs plus haut : CDN RN)"
+          exit 1
 
       # xcodebuild build des cibles watchOS. CODE_SIGNING_ALLOWED=NO : on
       # cherche à vérifier que ça compile, pas à produire un binaire signé.

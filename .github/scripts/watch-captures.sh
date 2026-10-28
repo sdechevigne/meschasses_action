@@ -182,10 +182,30 @@ boot_device() {
 }
 
 # ---------------------------------------------------------------------------
-# 4) Boucle 3 × 2 × 5 — 30 captures. Un échec sur un device ne tue PAS les
-#    autres : on continue, et on sort en code 1 si au moins une capture manque.
+# 4) Round 2 : 60 captures. L'app lit `-screen <home|hunt|post|card|permit>`
+#    (DemoMode.swift round 2) et monte directement l'écran voulu.
+#    Matrice par taille × langue :
+#       - home   : les 5 fixtures (empty, oneHunt, noCoordinates, card, signedOut)
+#       - hunt   : oneHunt
+#       - post   : oneHunt, noCoordinates
+#       - card   : card
+#       - permit : oneHunt
+#    = 10 captures / (taille × langue). × 3 × 2 = 60.
+#    Nom : <taille>-<langue>-<démo>-<écran>.png
 # ---------------------------------------------------------------------------
-DEMOS=(empty oneHunt noCoordinates card signedOut)
+# Liste explicite (démo, écran) — simple et lisible.
+PAIRS=(
+  "empty home"
+  "oneHunt home"
+  "noCoordinates home"
+  "card home"
+  "signedOut home"
+  "oneHunt hunt"
+  "oneHunt post"
+  "noCoordinates post"
+  "card card"
+  "oneHunt permit"
+)
 LANGS=(fr en)
 
 shoot_device() {
@@ -206,14 +226,17 @@ shoot_device() {
   fi
 
   for lang in "${LANGS[@]}"; do
-    for demo in "${DEMOS[@]}"; do
-      local out="$OUTDIR/${size_label}-${lang}-${demo}.png"
+    for pair in "${PAIRS[@]}"; do
+      local demo="${pair% *}"
+      local screen="${pair#* }"
+      local out="$OUTDIR/${size_label}-${lang}-${demo}-${screen}.png"
       echo "  → $out"
 
       xcrun simctl terminate "$udid" "$BUNDLE_ID" 2>/dev/null || true
 
       if ! xcrun simctl launch "$udid" "$BUNDLE_ID" \
             -demo "$demo" \
+            -screen "$screen" \
             -AppleLanguages "($lang)" \
             -AppleLocale "${lang}_FR" >/dev/null; then
         echo "::warning::launch a échoué pour $out — capture ignorée"
@@ -235,15 +258,17 @@ shoot_device "$UDID_45" "45mm"
 shoot_device "$UDID_49" "49mm-ultra"
 
 # ---------------------------------------------------------------------------
-# 5) Vérification finale.
+# 5) Vérification finale : 3 × 2 × 10 = 60.
 # ---------------------------------------------------------------------------
 echo
-echo "## Vérification des 30 captures"
+echo "## Vérification des 60 captures"
 missing=0
 for size in 41mm 45mm 49mm-ultra; do
   for lang in "${LANGS[@]}"; do
-    for demo in "${DEMOS[@]}"; do
-      f="$OUTDIR/${size}-${lang}-${demo}.png"
+    for pair in "${PAIRS[@]}"; do
+      demo="${pair% *}"
+      screen="${pair#* }"
+      f="$OUTDIR/${size}-${lang}-${demo}-${screen}.png"
       if [[ ! -s "$f" ]]; then
         echo "::error::capture manquante ou vide : $f"
         missing=$((missing+1))
@@ -264,4 +289,4 @@ if [[ "$missing" -gt 0 ]]; then
   exit 1
 fi
 
-echo "## 30 captures OK dans $OUTDIR"
+echo "## 60 captures OK dans $OUTDIR"

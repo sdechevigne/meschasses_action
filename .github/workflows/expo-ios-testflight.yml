@@ -67,8 +67,24 @@ jobs:
           echo "expo_major=$M" >> "$GITHUB_OUTPUT"
           echo "Expo SDK $M" >> "$GITHUB_STEP_SUMMARY"
 
+  # Quand watch=true, on exige que `watch-tests.yml` passe au vert AVANT
+  # d'engager la minute de build iOS (eas build --local, puis upload TestFlight).
+  # `uses: ./.github/workflows/watch-tests.yml` l'appelle via workflow_call.
+  # Pour watch=false, ce job est skippé et le build démarre comme avant.
+  watch-tests:
+    if: ${{ inputs.watch == true }}
+    uses: ./.github/workflows/watch-tests.yml
+    with:
+      monorepo_ref: ${{ inputs.monorepo_ref }}
+    secrets: inherit
+
   build-and-deploy:
-    needs: socle
+    # watch=false : watch-tests est skippé, build démarre dès que `socle` est OK.
+    # watch=true  : build démarre seulement si watch-tests est au vert (sinon,
+    # `always() && result == success` est faux → le job iOS est skip → pas
+    # d'envoi TestFlight).
+    needs: [socle, watch-tests]
+    if: ${{ always() && needs.socle.result == 'success' && (inputs.watch != true || needs.watch-tests.result == 'success') }}
     runs-on: ${{ fromJSON(needs.socle.outputs.expo_major) >= 58 && 'xcode-27' || 'macos-15' }}
     timeout-minutes: 150
     environment: production

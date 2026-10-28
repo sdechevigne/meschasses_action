@@ -20,6 +20,16 @@ on:
         description: "Branche (ou tag/SHA) du monorepo à tester — vide = branche par défaut"
         required: false
         default: ""
+  # Appelé depuis `expo-ios-testflight.yml` quand `watch: true` : un échec ici
+  # bloque l'envoi TestFlight (le job `build-and-deploy` a `needs: watch-tests`
+  # et exige `result == success`).
+  workflow_call:
+    inputs:
+      monorepo_ref:
+        description: "Branche (ou tag/SHA) du monorepo à tester"
+        required: false
+        default: ""
+        type: string
 
 permissions: {}
 
@@ -335,3 +345,30 @@ jobs:
             "build-complications" \
             "MesChassesWatchComplications.appex" \
             "MesChassesWatchComplications"
+
+      # Scripts CI de CE repo (public) : checkout sans token, dans ci/.
+      # Nécessaire pour `watch-captures.sh` qui vit dans ce dépôt-ci.
+      - name: Checkout scripts CI
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          path: ci
+
+      # 30 captures (3 tailles × 2 langues × 5 fixtures). Lance le simulateur,
+      # installe le .app Debug déjà bâti, puis itère via DemoMode (-demo <nom>).
+      # Les simulateurs sont créés à la volée et supprimés en fin de step.
+      - name: Captures simulateur watchOS (3×2×5)
+        working-directory: app/apps/mobile/ios
+        env:
+          WATCH_APP_PATH: ${{ github.workspace }}/app/apps/mobile/ios/build-app/Debug-watchsimulator/MesChassesWatch.app
+          OUTDIR: ${{ github.workspace }}/watch-captures
+        run: bash "${{ github.workspace }}/ci/.github/scripts/watch-captures.sh"
+
+      - name: Upload artifact watch-captures
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: watch-captures
+          path: watch-captures/*.png
+          if-no-files-found: error
+          retention-days: 30

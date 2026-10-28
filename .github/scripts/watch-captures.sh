@@ -3,10 +3,7 @@
 #
 # Prend 30 captures de l'app montre (3 tailles × 2 langues × 5 fixtures DemoMode)
 # sur un runner macOS avec Xcode installé, et pose les PNG dans `$OUTDIR`
-# (par défaut `watch-captures/`). Un échec sur une fixture donnée NE coupe PAS
-# la boucle : on continue à shooter les autres pour laisser le pilote
-# diagnostiquer, et on sort en code 1 à la fin si au moins une capture manque
-# ou est vide.
+# (par défaut `watch-captures/`).
 #
 # Pré-requis dans l'env du job :
 #   - WATCH_APP_PATH : chemin absolu vers le .app watchOS Debug déjà bâti
@@ -22,7 +19,7 @@
 # (apps/mobile/targets/watch/Views/DemoMode.swift) et NE DÉMARRE PAS
 # WatchConnectivity — l'écran est prévisible.
 
-set -euo pipefail
+set -uo pipefail
 
 : "${WATCH_APP_PATH:?variable WATCH_APP_PATH manquante — chemin vers MesChassesWatch.app}"
 OUTDIR="${OUTDIR:-watch-captures}"
@@ -44,14 +41,13 @@ echo "OUTDIR=$OUTDIR"
 # 1) Détection du runtime watchOS disponible (le plus récent).
 # ---------------------------------------------------------------------------
 WATCH_RUNTIME=$(xcrun simctl list runtimes watchOS -j | \
-  node -e '
+  node -e '(() => {
     const r = JSON.parse(require("fs").readFileSync(0,"utf8")).runtimes || [];
     const avail = r.filter(x => x.isAvailable !== false);
     if (avail.length === 0) { process.exit(2); }
-    // Trie par version décroissante (version = "11.0", "10.5", etc.)
     avail.sort((a,b) => (b.version||"").localeCompare(a.version||"", undefined, {numeric:true}));
     process.stdout.write(avail[0].identifier);
-  ' || true)
+  })()' || true)
 
 if [[ -z "$WATCH_RUNTIME" ]]; then
   echo "::error::Aucun runtime watchOS disponible sur le runner."
@@ -61,26 +57,22 @@ fi
 echo "Runtime watchOS retenu : $WATCH_RUNTIME"
 
 # ---------------------------------------------------------------------------
-# 2) Choix des 3 device types (41 mm / 45 mm / Ultra 49 mm). Si un modèle
-#    exact n'est pas présent sur le runner, on prend un fallback de la même
-#    famille (ex. une Series 10 45 mm pour le 45 mm).
+# 2) Choix des 3 device types (41 mm / 45 mm / Ultra 49 mm).
 # ---------------------------------------------------------------------------
-# Liste les device types watchOS une seule fois.
 ALL_WATCH_TYPES=$(xcrun simctl list devicetypes -j | \
-  node -e '
+  node -e '(() => {
     const d = JSON.parse(require("fs").readFileSync(0,"utf8")).devicetypes || [];
     const w = d.filter(x => (x.productFamily||"").toLowerCase().includes("watch") ||
                             (x.identifier||"").includes("Apple-Watch"));
     for (const t of w) {
       process.stdout.write(`${t.identifier}\t${t.name}\n`);
     }
-  ')
+  })()')
 
 echo "Device types watchOS disponibles :"
 echo "$ALL_WATCH_TYPES" | sed "s/^/  /"
 
 pick_device_type() {
-  # $1 = regex à chercher (name ou identifier)
   echo "$ALL_WATCH_TYPES" | awk -F'\t' -v pat="$1" '
     tolower($0) ~ tolower(pat) { print $1; exit }
   '
@@ -90,7 +82,6 @@ TYPE_41=$(pick_device_type '41mm')
 TYPE_45=$(pick_device_type '45mm')
 TYPE_49=$(pick_device_type 'Ultra.*49mm|49mm.*Ultra|49mm')
 
-# Fallbacks moins précis si rien trouvé
 [[ -z "$TYPE_41" ]] && TYPE_41=$(pick_device_type 'Series.*7|Series.*8|Series.*9|Series.*10|Series 10|SE.*44mm|40mm')
 [[ -z "$TYPE_45" ]] && TYPE_45=$(pick_device_type 'Series.*10|Series 10|Series.*9|Series.*8|Series.*7|44mm')
 [[ -z "$TYPE_49" ]] && TYPE_49=$(pick_device_type 'Ultra')
@@ -112,9 +103,8 @@ NAME_45="captures-45mm"
 NAME_49="captures-49mm-ultra"
 
 existing_device_udid() {
-  # $1 = nom du device, $2 = type identifier
   xcrun simctl list devices -j | \
-    node -e '
+    node -e '(() => {
       const n = process.argv[1];
       const t = process.argv[2];
       const d = JSON.parse(require("fs").readFileSync(0,"utf8")).devices || {};
@@ -126,11 +116,10 @@ existing_device_udid() {
           }
         }
       }
-    ' "$1" "$2"
+    })()' "$1" "$2"
 }
 
 create_or_reuse() {
-  # $1 = nom, $2 = type, $3 = runtime
   local existing
   existing=$(existing_device_udid "$1" "$2" || true)
   if [[ -n "$existing" ]]; then
@@ -148,7 +137,6 @@ echo "UDID 41mm = $UDID_41"
 echo "UDID 45mm = $UDID_45"
 echo "UDID 49mm = $UDID_49"
 
-# Nettoyage en fin de run : shutdown + delete pour laisser le runner propre.
 cleanup() {
   for u in "$UDID_41" "$UDID_45" "$UDID_49"; do
     [[ -z "$u" ]] && continue
@@ -158,10 +146,44 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Robust boot : certains device types (notamment Ultra 49 mm sur les runners
+# `xcode-27`) voient `simctl bootstatus` revenir aussitôt avec un statut -1
+# (`4294967295`) sans que le device soit réellement booté — install échoue
+# derrière avec « Unable to lookup in current state: Shutdown ». On force
+# alors un shutdown propre et on retente le boot, jusqu'à 3 fois.
+boot_device() {
+  local udid="$1"
+  for attempt in 1 2 3; do
+    xcrun simctl shutdown "$udid" 2>/dev/null || true
+    sleep 1
+    xcrun simctl boot "$udid" 2>/dev/null || true
+    # Attend la fin du boot, bornée à 180 s via timeout extérieur (bootstatus -b).
+    xcrun simctl bootstatus "$udid" -b >/tmp/bootstatus.$$ 2>&1 || true
+    cat /tmp/bootstatus.$$
+    # Confirme l'état réel : la ligne de state dans `simctl list devices`.
+    local state
+    state=$(xcrun simctl list devices -j | \
+      node -e '(() => {
+        const u = process.argv[1];
+        const d = JSON.parse(require("fs").readFileSync(0,"utf8")).devices || {};
+        for (const k of Object.keys(d)) for (const dev of d[k]) if (dev.udid === u) { process.stdout.write(dev.state||""); return; }
+      })()' "$udid" || true)
+    echo "  state après tentative $attempt = $state"
+    if [[ "$state" == "Booted" ]]; then
+      rm -f /tmp/bootstatus.$$
+      return 0
+    fi
+    echo "  reboot (tentative $attempt/3)…"
+    sleep 2
+  done
+  rm -f /tmp/bootstatus.$$
+  echo "::error::device $udid refuse de booter après 3 tentatives"
+  return 1
+}
+
 # ---------------------------------------------------------------------------
-# 4) Boucle 3 × 2 × 5 — 30 captures.
-#    Pour chaque simulateur : boot une seule fois, install, puis
-#    terminate + launch + attente + screenshot pour chaque fixture et langue.
+# 4) Boucle 3 × 2 × 5 — 30 captures. Un échec sur un device ne tue PAS les
+#    autres : on continue, et on sort en code 1 si au moins une capture manque.
 # ---------------------------------------------------------------------------
 DEMOS=(empty oneHunt noCoordinates card signedOut)
 LANGS=(fr en)
@@ -173,24 +195,23 @@ shoot_device() {
   echo
   echo "### Simulateur $size_label ($udid)"
 
-  # Boot (idempotent)
-  xcrun simctl boot "$udid" 2>/dev/null || true
-  xcrun simctl bootstatus "$udid" -b
+  if ! boot_device "$udid"; then
+    echo "::error::simulateur $size_label indisponible — captures de ce device ignorées"
+    return 0
+  fi
 
-  # Install du .app Debug.
-  xcrun simctl install "$udid" "$WATCH_APP_PATH"
+  if ! xcrun simctl install "$udid" "$WATCH_APP_PATH"; then
+    echo "::error::simctl install a échoué pour $size_label — captures ignorées"
+    return 0
+  fi
 
   for lang in "${LANGS[@]}"; do
     for demo in "${DEMOS[@]}"; do
       local out="$OUTDIR/${size_label}-${lang}-${demo}.png"
       echo "  → $out"
 
-      # Terminate l'instance précédente (ignore l'erreur quand elle n'est pas lancée).
       xcrun simctl terminate "$udid" "$BUNDLE_ID" 2>/dev/null || true
 
-      # Launch avec arguments : -demo <fixture> et AppleLanguages.
-      # NOTE: la syntaxe `-AppleLanguages (fr)` est celle attendue par
-      # NSUserDefaults ; sans parenthèses, iOS lit la langue par défaut.
       if ! xcrun simctl launch "$udid" "$BUNDLE_ID" \
             -demo "$demo" \
             -AppleLanguages "($lang)" \
@@ -214,7 +235,7 @@ shoot_device "$UDID_45" "45mm"
 shoot_device "$UDID_49" "49mm-ultra"
 
 # ---------------------------------------------------------------------------
-# 5) Vérification finale : les 30 fichiers existent et pèsent > 1 Ko.
+# 5) Vérification finale.
 # ---------------------------------------------------------------------------
 echo
 echo "## Vérification des 30 captures"

@@ -30,7 +30,10 @@
 # les deux séparés pour ne RIEN changer au comportement du contrôle de
 # non-régression (watch-tests.yml).
 
-set -uo pipefail
+# set -u pose des bugs sur des manipulations de tableaux vides en bash 3.2
+# (ancien bash macOS système). On ne garde que pipefail — les variables
+# nécessaires sont vérifiées à la main en tête de script.
+set -o pipefail
 
 : "${WATCH_APP_PATH:?variable WATCH_APP_PATH manquante — chemin vers MesChassesWatch.app}"
 OUTDIR="${OUTDIR:-watch-captures-store}"
@@ -128,6 +131,7 @@ POOL+=("41mm:$TYPE_41")
 CREATED_UDIDS=()
 
 cleanup() {
+  [[ ${#CREATED_UDIDS[@]} -eq 0 ]] && return
   for u in "${CREATED_UDIDS[@]}"; do
     [[ -z "$u" ]] && continue
     xcrun simctl shutdown "$u" 2>/dev/null || true
@@ -364,12 +368,18 @@ for pair in "${POOL[@]}"; do
   # Suppression immédiate pour alléger le pool avant le device suivant.
   xcrun simctl shutdown "$udid" 2>/dev/null || true
   xcrun simctl delete "$udid" 2>/dev/null || true
-  # Retirer de la liste de cleanup (déjà détruit).
+  # Retirer de la liste de cleanup (déjà détruit). Un tableau vide avec
+  # `set -u` fait exploser `${arr[@]}` → on reconstruit par itération.
   NEW_CREATED=()
-  for u in "${CREATED_UDIDS[@]}"; do
-    [[ "$u" != "$udid" ]] && NEW_CREATED+=("$u")
-  done
-  CREATED_UDIDS=("${NEW_CREATED[@]}")
+  if [[ ${#CREATED_UDIDS[@]} -gt 0 ]]; then
+    for u in "${CREATED_UDIDS[@]}"; do
+      [[ "$u" != "$udid" ]] && NEW_CREATED+=("$u")
+    done
+  fi
+  CREATED_UDIDS=()
+  if [[ ${#NEW_CREATED[@]} -gt 0 ]]; then
+    CREATED_UDIDS=("${NEW_CREATED[@]}")
+  fi
 done
 
 # ---------------------------------------------------------------------------

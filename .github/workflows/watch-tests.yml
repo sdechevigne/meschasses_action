@@ -11,7 +11,7 @@ name: Watch Core — Swift tests
 #
 # La Tâche 11 étendra `watch-build` avec des captures de simulateur (via
 # `-demo <fixture>` dans l'app). En attendant, un simple `xcodebuild build`
-# pour `generic/platform=watchOS Simulator`.
+# pour `-sdk watchsimulator`.
 
 on:
   workflow_dispatch:
@@ -71,8 +71,39 @@ jobs:
   # côté PhoneLink (Tâche 5) qu'un `swift test` sur macOS ne voit pas.
   watch-build:
     runs-on: xcode-27
-    timeout-minutes: 45
+    # 90 min : même borne d'alerte que le build iOS. L'essentiel du budget
+    # part en pod install (cache froid) et compile des Pods RN la toute
+    # première fois ; les runs suivants sont bornés par la compilation Swift
+    # des cibles watchOS (~5-10 min).
+    timeout-minutes: 90
     environment: production
+
+    # Variables communes à tous les steps du job qui touchent aux pods ou à
+    # xcodebuild. Deux rôles :
+    #
+    #  1) Forcer React Native à utiliser les ARTIFACTS PREBUILT (xcframework
+    #     côté Dependencies, xcframework côté React-Core). Sans ces drapeaux,
+    #     `pod install` tente de bâtir RN et ses dépendances C++ depuis les
+    #     sources — à chaque run, sur chaque arch, pour chaque Pod. En mode
+    #     prebuilt, pod télécharge un tarball une fois, le valide par SHA1,
+    #     et REUTILISE le fichier posé dans `~/Library/Caches/ReactNative/`
+    #     à chaque invocation ultérieure (code source :
+    #     facebook/react-native@0a83e72 scripts/cocoapods/rndependencies.rb
+    #     et sdks/hermes-engine/hermes-utils.rb — tous deux utilisent le
+    #     même dossier `~/Library/Caches/ReactNative`).
+    #  2) Activer le MIROIR Maven côté RN. L'URL d'origine (`repo1.maven.org`)
+    #     a été instable sur plusieurs runs (`curl 56` / `curl 92`) ; le
+    #     miroir `repo.reactnative.dev` est explicitement supporté par
+    #     `ReactNativePodsUtils.maven_repository_urls` quand `RCT_REACT_NATIVE_
+    #     MAVEN_MIRROR_ENABLED=1` (idem commit `0a83e72`).
+    #  3) `RCT_SKIP_CACHES=0` : on VEUT que RN consulte et peuple
+    #     `~/Library/Caches/ReactNative` — c'est précisément le dossier
+    #     qu'`actions/cache` persiste entre runs.
+    env:
+      RCT_USE_PREBUILT_RNCORE: "1"
+      RCT_USE_RN_DEP: "1"
+      RCT_REACT_NATIVE_MAVEN_MIRROR_ENABLED: "1"
+      RCT_SKIP_CACHES: "0"
 
     steps:
       - name: Checkout monorepo
@@ -116,6 +147,21 @@ jobs:
           key: pods-watch-${{ runner.os }}-${{ hashFiles('app/pnpm-lock.yaml') }}
           restore-keys: pods-watch-${{ runner.os }}-
 
+      # Cache des artifacts prebuilt de React Native (xcframeworks de
+      # ReactNativeDependencies et hermes-engine). Même dossier des deux côtés
+      # (voir en-tête `env:`). Clé = hash du pnpm-lock + chemin natif, pour
+      # qu'une bump de version RN change la clé et force un nouveau cache
+      # (le podspec vérifie le SHA1, un vieux cache serait rejeté de toute
+      # façon mais autant éviter l'aller-retour).
+      - name: Cache React Native prebuilt artifacts
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/Library/Caches/ReactNative
+          key: rn-prebuilt-${{ runner.os }}-${{ hashFiles('app/pnpm-lock.yaml') }}
+          restore-keys: |
+            rn-prebuilt-${{ runner.os }}-
+
       - name: Install dependencies
         run: cd app && pnpm install --frozen-lockfile
 
@@ -133,18 +179,29 @@ jobs:
         run: |
           npx expo prebuild --platform ios --no-install --non-interactive --clean
 
-      # pod install : récurrence d'un échec curl HTTP/2 sur
-      # repo.reactnative.dev (téléchargement de react-native-artifacts) et sur
-      # un pod React-Core-prebuilt (CDN GitHub). Transitoire — on retente
-      # jusqu'à 3 fois avec une attente, plutôt que de faire tomber le job
-      # entier pour une erreur réseau.
+      # pod install : trois sources d'échec rencontrées sur les runs
+      # précédents (40649859890, 40660281899, 40663168061) :
+      #   • CDN GitHub artifacts (`React-Core-prebuilt`) qui coupe au milieu
+      #     du téléchargement (`curl: (56) Recv failure`).
+      #   • Miroir Maven RN (`repo.reactnative.dev`) qui ferme un stream HTTP/2
+      #     avant la fin (`curl: (92) HTTP/2 stream 1 not closed cleanly`).
+      #   • Téléchargement de `react-native-artifacts` qui ne finit JAMAIS
+      #     (run 40663168061 : 45 min sans sortie, timeout du job).
+      #
+      # Les deux premiers sont rejoués ici par la boucle (3 tentatives).
+      # Le troisième est désamorcé par les trois mécanismes posés plus haut :
+      # miroir activé (le podspec essaie `repo1.maven.org` ET
+      # `repo.reactnative.dev`), artifacts cachés entre runs
+      # (`~/Library/Caches/ReactNative` dans `actions/cache`), et par la
+      # suppression de `--repo-update` qui déclenchait un pull de tous les
+      # podspecs à chaque run.
       - name: pod install
         working-directory: app/apps/mobile/ios
         run: |
           set -o pipefail
           for i in 1 2 3; do
-            if pod install --repo-update; then
-              echo "pod install OK au tentative $i" >> "$GITHUB_STEP_SUMMARY"
+            if pod install; then
+              echo "pod install OK à la tentative $i" >> "$GITHUB_STEP_SUMMARY"
               exit 0
             fi
             echo "pod install a échoué (tentative $i/3), nouvelle tentative dans 30s..."
@@ -155,8 +212,8 @@ jobs:
 
       # xcodebuild build des cibles watchOS. CODE_SIGNING_ALLOWED=NO : on
       # cherche à vérifier que ça compile, pas à produire un binaire signé.
-      # `generic/platform=watchOS Simulator` évite d'avoir à sélectionner un
-      # simulateur précis par son UDID.
+      # `-sdk watchsimulator` évite d'avoir à sélectionner un simulateur
+      # précis par son UDID.
       #
       # Pas de workspace ni de scheme : on cible le project `MesChasses.xcodeproj`
       # directement avec `-target MesChassesWatch`. Autrement, le scheme

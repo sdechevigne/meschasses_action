@@ -81,10 +81,16 @@ jobs:
   build-and-deploy:
     # watch=false : watch-tests est skippé, build démarre dès que `socle` est OK.
     # watch=true  : build démarre seulement si watch-tests est au vert (sinon,
-    # `always() && result == success` est faux → le job iOS est skip → pas
-    # d'envoi TestFlight).
+    # ce job est skip → pas d'envoi TestFlight).
+    #
+    # `if: !cancelled()` au lieu de `always()` : avec `always()`, un cancel du
+    # run (annulation manuelle, `cancel-in-progress: true` d'une concurrence)
+    # faisait quand même tourner le build + l'upload TestFlight → vécu
+    # possiblement en `watch: false` aussi. `!cancelled()` laisse passer les
+    # jobs skippés (watch-tests l'est en watch=false) mais STOPPE net un run
+    # annulé.
     needs: [socle, watch-tests]
-    if: ${{ always() && needs.socle.result == 'success' && (inputs.watch != true || needs.watch-tests.result == 'success') }}
+    if: ${{ !cancelled() && needs.socle.result == 'success' && (inputs.watch != true || needs.watch-tests.result == 'success') }}
     runs-on: ${{ fromJSON(needs.socle.outputs.expo_major) >= 58 && 'xcode-27' || 'macos-15' }}
     timeout-minutes: 150
     environment: production

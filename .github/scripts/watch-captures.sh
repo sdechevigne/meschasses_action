@@ -151,15 +151,37 @@ trap cleanup EXIT
 # (`4294967295`) sans que le device soit réellement booté — install échoue
 # derrière avec « Unable to lookup in current state: Shutdown ». On force
 # alors un shutdown propre et on retente le boot, jusqu'à 3 fois.
+# Timeout de bootstatus en secondes. Correctif revue : avant on prétendait un
+# timeout de 180 s qui n'existait pas (`-b` seul attend indéfiniment). Comme
+# macOS n'a pas `timeout`, on lance `bootstatus` en arrière-plan et on
+# surveille son PID jusqu'à `BOOTSTATUS_TIMEOUT`.
+BOOTSTATUS_TIMEOUT="${BOOTSTATUS_TIMEOUT:-180}"
+
 boot_device() {
   local udid="$1"
   for attempt in 1 2 3; do
     xcrun simctl shutdown "$udid" 2>/dev/null || true
     sleep 1
     xcrun simctl boot "$udid" 2>/dev/null || true
-    # Attend la fin du boot, bornée à 180 s via timeout extérieur (bootstatus -b).
-    xcrun simctl bootstatus "$udid" -b >/tmp/bootstatus.$$ 2>&1 || true
-    cat /tmp/bootstatus.$$
+
+    # bootstatus -b attend la fin du boot sans borne native. On le lance en
+    # arrière-plan et on l'arrête de force au bout de BOOTSTATUS_TIMEOUT s.
+    local statfile="/tmp/bootstatus.$$.$attempt"
+    xcrun simctl bootstatus "$udid" -b >"$statfile" 2>&1 &
+    local bs_pid=$!
+    local waited=0
+    while kill -0 "$bs_pid" 2>/dev/null; do
+      if (( waited >= BOOTSTATUS_TIMEOUT )); then
+        echo "  ⏱️ bootstatus > ${BOOTSTATUS_TIMEOUT}s, kill $bs_pid"
+        kill -9 "$bs_pid" 2>/dev/null || true
+        break
+      fi
+      sleep 2; waited=$(( waited + 2 ))
+    done
+    wait "$bs_pid" 2>/dev/null || true
+    cat "$statfile"
+    rm -f "$statfile"
+
     # Confirme l'état réel : la ligne de state dans `simctl list devices`.
     local state
     state=$(xcrun simctl list devices -j | \
@@ -170,13 +192,11 @@ boot_device() {
       })()' "$udid" || true)
     echo "  state après tentative $attempt = $state"
     if [[ "$state" == "Booted" ]]; then
-      rm -f /tmp/bootstatus.$$
       return 0
     fi
     echo "  reboot (tentative $attempt/3)…"
     sleep 2
   done
-  rm -f /tmp/bootstatus.$$
   echo "::error::device $udid refuse de booter après 3 tentatives"
   return 1
 }
@@ -272,6 +292,8 @@ shoot_device() {
             -screen "$screen" \
             -AppleLanguages "($lang)" \
             -AppleLocale "${lang}_FR" 2>/tmp/launch.err >/dev/null; then
+        echo "    launch.err :"
+        sed 's/^/      /' /tmp/launch.err || true
         if grep -q "server died\|code=-308\|cannot determine the runtime" /tmp/launch.err 2>/dev/null; then
           echo "::warning::CoreSimulatorService mort pendant la série — restart"
           restart_core_simulator
@@ -303,11 +325,25 @@ shoot_device "$UDID_45" "45mm"
 shoot_device "$UDID_49" "49mm-ultra"
 
 # ---------------------------------------------------------------------------
-# 5) Vérification finale : 3 × 2 × 10 = 60.
+# 5) Vérification finale : 60 captures, puis contrôle d'empreintes.
+#
+# Une capture peut être « présente et de taille normale » tout en montrant
+# la mauvaise chose : crash juste après launch (cadran noir), fallback
+# silencieux de `DemoRootView` quand l'élément manque (round 1 : retombait
+# sur l'accueil), traduction manquante (EN == FR). On attrape ces trois cas
+# par comparaison de SHA256 :
+#   • écran `hunt`/`post`/`card`/`permit` identique à `home` même démo /
+#     taille / langue → la capture détail est en fait l'accueil.
+#   • `fr` identique à `en` même écran / démo / taille → l'EN n'est pas
+#     réellement affiché (ou l'écran n'a aucun texte localisé — toléré
+#     uniquement pour `card`/`permit` sans texte localisable, voir
+#     exceptions ci-dessous).
+#   • taille < 1 Ko → ::error::.
 # ---------------------------------------------------------------------------
 echo
 echo "## Vérification des 60 captures"
 missing=0
+too_small=0
 for size in 41mm 45mm 49mm-ultra; do
   for lang in "${LANGS[@]}"; do
     for pair in "${PAIRS[@]}"; do
@@ -321,7 +357,8 @@ for size in 41mm 45mm 49mm-ultra; do
       fi
       sz=$(stat -f%z "$f" 2>/dev/null || stat -c%s "$f")
       if [[ "$sz" -lt 1024 ]]; then
-        echo "::warning::capture $f suspecte ($sz octets)"
+        echo "::error::capture $f suspecte ($sz octets)"
+        too_small=$((too_small+1))
       fi
     done
   done
@@ -329,8 +366,58 @@ done
 
 ls -la "$OUTDIR" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
 
-if [[ "$missing" -gt 0 ]]; then
-  echo "::error::$missing capture(s) manquante(s)"
+# Pré-calcul des SHA256.
+sha_of() {
+  shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'
+}
+
+echo
+echo "## Contrôle d'empreintes (SHA256)"
+dup_home=0
+dup_i18n=0
+
+for size in 41mm 45mm 49mm-ultra; do
+  for lang in "${LANGS[@]}"; do
+    # (a) écran détail != home de la même démo / taille / langue.
+    for pair in "${PAIRS[@]}"; do
+      demo="${pair% *}"
+      screen="${pair#* }"
+      [[ "$screen" == "home" ]] && continue
+      f="$OUTDIR/${size}-${lang}-${demo}-${screen}.png"
+      href="$OUTDIR/${size}-${lang}-${demo}-home.png"
+      [[ -s "$f" && -s "$href" ]] || continue
+      sh_f=$(sha_of "$f"); sh_h=$(sha_of "$href")
+      if [[ "$sh_f" == "$sh_h" ]]; then
+        echo "::error::$f identique à $href (fallback silencieux ou crash → accueil)"
+        dup_home=$((dup_home+1))
+      fi
+    done
+  done
+
+  # (b) fr != en même écran / démo / taille.
+  # Exception : la carte de membre et le QR permit n'ont PAS de texte
+  # localisé significatif — un fr == en y est acceptable. On exempte
+  # donc l'écran `card` du contrôle i18n. Pour `permit`, le libellé vient
+  # du snapshot (déjà traduit par le monorepo), donc on exempte aussi.
+  for pair in "${PAIRS[@]}"; do
+    demo="${pair% *}"
+    screen="${pair#* }"
+    [[ "$screen" == "card" || "$screen" == "permit" ]] && continue
+    f_fr="$OUTDIR/${size}-fr-${demo}-${screen}.png"
+    f_en="$OUTDIR/${size}-en-${demo}-${screen}.png"
+    [[ -s "$f_fr" && -s "$f_en" ]] || continue
+    if [[ "$(sha_of "$f_fr")" == "$(sha_of "$f_en")" ]]; then
+      echo "::error::$f_fr == $f_en (traduction EN non appliquée)"
+      dup_i18n=$((dup_i18n+1))
+    fi
+  done
+done
+
+echo "Doublons détail=home : $dup_home"
+echo "Doublons fr=en      : $dup_i18n"
+
+if [[ "$missing" -gt 0 || "$too_small" -gt 0 || "$dup_home" -gt 0 || "$dup_i18n" -gt 0 ]]; then
+  echo "::error::échec contrôle captures (manquantes=$missing, suspectes=$too_small, détail=home=$dup_home, fr=en=$dup_i18n)"
   exit 1
 fi
 

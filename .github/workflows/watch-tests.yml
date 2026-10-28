@@ -354,11 +354,14 @@ jobs:
           persist-credentials: false
           path: ci
 
-      # 30 captures (3 tailles × 2 langues × 5 fixtures). Lance le simulateur,
-      # installe le .app Debug déjà bâti, puis itère via DemoMode (-demo <nom>).
-      # Les simulateurs sont créés à la volée et supprimés en fin de step.
-      - name: Captures simulateur watchOS (3×2×5)
+      # 60 captures (3 tailles × 2 langues × 10 écrans — matrice `-demo` + `-screen`
+      # dans DemoMode.swift). Lance le simulateur, installe le .app Debug déjà
+      # bâti, puis itère. Simulateurs créés à la volée et supprimés en fin de
+      # step. `timeout-minutes: 30` : borne dure si le CoreSimulatorService
+      # part en vrille (vécu run 40716075617 : hang indéfini du bootstatus).
+      - name: Captures simulateur watchOS (60 captures)
         working-directory: app/apps/mobile/ios
+        timeout-minutes: 30
         env:
           WATCH_APP_PATH: ${{ github.workspace }}/app/apps/mobile/ios/build-app/Debug-watchsimulator/MesChassesWatch.app
           OUTDIR: ${{ github.workspace }}/watch-captures

@@ -291,15 +291,20 @@ shoot_device() {
     return 0
   fi
 
-  if ! xcrun simctl install "$udid" "$WATCH_APP_PATH"; then
-    echo "::warning::simctl install KO pour $size_label — restart CoreSimulatorService + retry"
+  if xcrun simctl install "$udid" "$WATCH_APP_PATH" 2>/tmp/install.err; then
+    echo "  simctl install OK ($WATCH_APP_PATH)"
+  else
+    echo "::warning::simctl install KO pour $size_label :"
+    sed 's/^/    /' /tmp/install.err || true
+    echo "  → restart CoreSimulatorService + retry"
     restart_core_simulator
     if ! boot_device "$udid"; then
       echo "::error::reboot post-restart impossible — captures de $size_label ignorées"
       return 0
     fi
-    if ! xcrun simctl install "$udid" "$WATCH_APP_PATH"; then
-      echo "::error::simctl install KO deux fois pour $size_label — captures ignorées"
+    if ! xcrun simctl install "$udid" "$WATCH_APP_PATH" 2>/tmp/install.err; then
+      echo "::error::simctl install KO deux fois pour $size_label :"
+      sed 's/^/    /' /tmp/install.err || true
       return 0
     fi
   fi
@@ -345,10 +350,24 @@ shoot_device() {
         launch_args+=(-demoHeading "$DEMO_HEADING")
       fi
 
+      # Si le device s'est éteint (code=405, « Unable to lookup in current
+      # state: Shutdown »), on le re-boote et on réinstalle avant de
+      # relancer. Vécu run 40768506954 : le device Ultra 49mm partait
+      # Shutdown après le 1er launch sans qu'on sache pourquoi (ni crash,
+      # ni timeout) → sans reboot, toute la série était perdue.
       if ! xcrun simctl launch "$udid" "$BUNDLE_ID" "${launch_args[@]}" 2>/tmp/launch.err >/dev/null; then
         echo "    launch.err :"
         sed 's/^/      /' /tmp/launch.err || true
-        if grep -q "server died\|code=-308\|cannot determine the runtime" /tmp/launch.err 2>/dev/null; then
+        if grep -q "current state: Shutdown\|code=405" /tmp/launch.err 2>/dev/null; then
+          echo "::warning::device shutdown entre deux lancements — reboot"
+          boot_device "$udid" || { echo "::error::reboot impossible, abandon $size_label"; return 0; }
+          xcrun simctl install "$udid" "$WATCH_APP_PATH" || true
+          xcrun simctl privacy "$udid" grant location "$BUNDLE_ID" 2>/dev/null || true
+          [[ "$shot_extra" == "located" ]] && xcrun simctl location "$udid" set "$SIM_LAT,$SIM_LNG" 2>/dev/null || true
+          xcrun simctl launch "$udid" "$BUNDLE_ID" "${launch_args[@]}" >/dev/null 2>&1 || {
+            echo "::warning::launch échoue encore pour $out après reboot"; continue;
+          }
+        elif grep -q "server died\|code=-308\|cannot determine the runtime" /tmp/launch.err 2>/dev/null; then
           echo "::warning::CoreSimulatorService mort — restart"
           restart_core_simulator
           boot_device "$udid" || { echo "::error::reboot impossible, abandon $size_label"; return 0; }

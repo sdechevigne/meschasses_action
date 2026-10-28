@@ -146,10 +146,15 @@ jobs:
             build 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" | tail -200
 
       # Upload de MesChassesWatch.app pour que les jobs `shoot` ne refassent
-      # pas le build. L'app en Debug fait ~10 Mo.
-      - name: Zip MesChassesWatch.app
+      # pas le build. On passe par `ditto --sequesterRsrc` : zip classique
+      # perd des attributs étendus (xattr) et des symboles de signature
+      # SimulatorAwareInfo que le simulateur refuse à l'install (run
+      # 40768506954 : premier launch sortait silencieusement, device
+      # passait Shutdown dès le 1er screenshot). `ditto -c -k` produit une
+      # archive compatible avec les app bundles .app.
+      - name: Zip MesChassesWatch.app (ditto)
         working-directory: app/apps/mobile/ios/build-app/Debug-watchsimulator
-        run: zip -r "$GITHUB_WORKSPACE/MesChassesWatch.app.zip" MesChassesWatch.app
+        run: ditto -c -k --keepParent --sequesterRsrc MesChassesWatch.app "$GITHUB_WORKSPACE/MesChassesWatch.app.zip"
 
       - name: Upload artifact MesChassesWatch.app
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -195,11 +200,13 @@ jobs:
           name: watch-app-debug
           path: ${{ github.workspace }}/app-zip
 
-      - name: Unzip app
+      - name: Unzip app (ditto)
         run: |
           mkdir -p "$GITHUB_WORKSPACE/app-bundle"
-          unzip -q "$GITHUB_WORKSPACE/app-zip/MesChassesWatch.app.zip" -d "$GITHUB_WORKSPACE/app-bundle"
-          ls -la "$GITHUB_WORKSPACE/app-bundle/MesChassesWatch.app" | head -5
+          ditto -x -k "$GITHUB_WORKSPACE/app-zip/MesChassesWatch.app.zip" "$GITHUB_WORKSPACE/app-bundle"
+          ls -la "$GITHUB_WORKSPACE/app-bundle/MesChassesWatch.app" | head -8
+          echo "Executable existe :"
+          test -f "$GITHUB_WORKSPACE/app-bundle/MesChassesWatch.app/MesChassesWatch" && echo "  oui ($(stat -f%z "$GITHUB_WORKSPACE/app-bundle/MesChassesWatch.app/MesChassesWatch") octets)" || echo "  NON"
 
       - name: Captures taille ${{ matrix.size }}
         timeout-minutes: 20

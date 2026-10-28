@@ -222,15 +222,12 @@ jobs:
       # 45 min. Les cibles watchOS ne lient AUCUN de ces pods — un build
       # ciblé sur le target natif coupe le chemin critique.
       #
-      # Deux xcodebuild distincts (plutôt qu'un seul sur l'app qui embarquerait
-      # automatiquement la complication) : on veut que CHAQUE cible compile
-      # indépendamment, pour qu'une régression sur `Complications.swift` ne
-      # passe pas inaperçue au prétexte que l'app watch n'en dépend plus
-      # directement. Un `clean -target …Complications` entre les deux force
-      # une vraie recompilation du .appex (sans ça, le second xcodebuild voit
-      # tout en cache incrémental et ne compile RIEN — le log en sortie du
-      # premier appel montrait déjà `.appex` recopié dans l'app, mais c'est
-      # moins net).
+      # Deux xcodebuild distincts avec `SYMROOT` SÉPARÉS plutôt qu'un seul :
+      # on veut que CHAQUE cible compile indépendamment, pour qu'une régression
+      # sur `Complications.swift` ne passe pas inaperçue au prétexte que l'app
+      # watch l'embarque. Chaque build écrit dans son propre dossier (
+      # `build-app/` et `build-complications/`), pas de clean/collision
+      # possible, et la vérif inspecte précisément les binaires de CHAQUE cible.
       - name: xcodebuild build — MesChassesWatch (app montre)
         working-directory: app/apps/mobile/ios
         run: |
@@ -241,24 +238,12 @@ jobs:
             -configuration Debug \
             -sdk watchsimulator \
             -skipPackagePluginValidation \
+            SYMROOT="$PWD/build-app" \
+            OBJROOT="$PWD/build-app/obj" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY= \
             build 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" | tail -200
-
-      - name: xcodebuild clean — MesChassesWatchComplications
-        working-directory: app/apps/mobile/ios
-        run: |
-          # Nettoie uniquement la cible Complications. Les .o / .swiftmodule
-          # du précédent xcodebuild sont retirés, pour que le build suivant
-          # recompile VRAIMENT les sources Swift de la complication (sinon il
-          # trouve tout en cache et finit en 4 s sans rien compiler).
-          xcodebuild \
-            -project MesChasses.xcodeproj \
-            -target MesChassesWatchComplications \
-            -configuration Debug \
-            -sdk watchsimulator \
-            clean 2>&1 | tail -30
 
       - name: xcodebuild build — MesChassesWatchComplications (complications)
         working-directory: app/apps/mobile/ios
@@ -270,6 +255,8 @@ jobs:
             -configuration Debug \
             -sdk watchsimulator \
             -skipPackagePluginValidation \
+            SYMROOT="$PWD/build-complications" \
+            OBJROOT="$PWD/build-complications/obj" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY= \
@@ -278,22 +265,23 @@ jobs:
       # Vérification explicite que les DEUX cibles ont bien produit un binaire
       # non trivial, pas seulement une archive propre : on contrôle la présence
       # des `.app` / `.appex` ET on inspecte la table de symboles avec `nm` à
-      # la recherche d'un symbole Swift d'une des sources partagées (
-      # `homeState` pour l'app, `qrModules` pour la complication — ces deux
-      # fonctions sont utilisées dans leur cible respective). Ce step tombe
-      # si xcodebuild a « réussi » sans rien produire (ex. target vide, source
-      # ignorée).
+      # la recherche d'un symbole Swift d'une des sources (`homeState` pour
+      # l'app, `NextHuntComplicationView` / `Complication*` pour la
+      # complication). Ce step tombe si xcodebuild a « réussi » sans rien
+      # produire (ex. target vide, source ignorée).
       - name: Vérification des binaires watchOS produits
         working-directory: app/apps/mobile/ios
         run: |
           set -euo pipefail
-          APP="build/Debug-watchsimulator/MesChassesWatch.app/MesChassesWatch"
-          APPEX="build/Debug-watchsimulator/MesChassesWatchComplications.appex/MesChassesWatchComplications"
+          APP="build-app/Debug-watchsimulator/MesChassesWatch.app/MesChassesWatch"
+          APPEX="build-complications/Debug-watchsimulator/MesChassesWatchComplications.appex/MesChassesWatchComplications"
 
           echo "## Binaires produits" >> "$GITHUB_STEP_SUMMARY"
           for binary in "$APP" "$APPEX"; do
             if [ ! -f "$binary" ]; then
               echo "::error::Binaire manquant : $binary"
+              echo "## Arborescence build-app/ et build-complications/" >> "$GITHUB_STEP_SUMMARY"
+              find build-app build-complications -maxdepth 4 -type f 2>&1 | tail -40 >> "$GITHUB_STEP_SUMMARY" || true
               exit 1
             fi
             SIZE=$(stat -f%z "$binary")
@@ -301,19 +289,16 @@ jobs:
             echo "- $binary ($SIZE octets, archs: $ARCHS)" >> "$GITHUB_STEP_SUMMARY"
           done
 
-          # Au moins un symbole Swift de nos sources dans chaque binaire :
-          # - app montre : `homeState(_:)` est utilisé par HomeView ;
-          # - complication : les sources de Complications.swift doivent fournir
-          #   des symboles de widget. On cherche un symbole Swift mangled
-          #   contenant "WatchCore" / "MesChassesWatchComplications" pour
-          #   vérifier que du code applicatif a bien été lié.
           echo "## Symboles Swift (échantillon)" >> "$GITHUB_STEP_SUMMARY"
+          # app montre : `homeState(_:)` est utilisé par HomeView.
           if ! xcrun nm -gU "$APP" 2>/dev/null | grep -q "homeState"; then
             echo "::error::Symbole 'homeState' absent de l'app montre"
             exit 1
           fi
           echo "- app montre : symbole \`homeState\` présent ✓" >> "$GITHUB_STEP_SUMMARY"
 
+          # complication : `NextHuntComplicationView` est défini dans
+          # targets/watch-widget/Complications.swift.
           if ! xcrun nm -gU "$APPEX" 2>/dev/null | grep -q "Complication"; then
             echo "::error::Aucun symbole 'Complication*' dans la complication"
             exit 1

@@ -111,53 +111,24 @@ echo "Device type Series 46 mm = ${TYPE_46:-(aucun)}"
 echo "Device type Series 45 mm = ${TYPE_45:-(aucun)}"
 echo "Device type Series 41/42 mm = ${TYPE_41:-(aucun)}"
 
-# On ne garde que les tailles RÉELLEMENT dispo sur le runner.
-DEVICES=()  # paires "label:udid"
-NAMES=()
+# Pool des tailles à capturer. On ne CRÉE PAS encore les devices : chaque
+# device est créé juste avant son tour, et détruit après sa série. C'est le
+# seul moyen fiable d'éviter que `CoreSimulatorService` reparte sans
+# retrouver le runtime bundle de devices créés avant son redémarrage (vécu
+# runs 40755759111 + 40758454581 : les devices créés avant le 1er restart
+# refusent de booter après — « cannot determine the runtime bundle »).
+POOL=()  # paires "label:type_id" — type_id peut être vide, on skip alors
+POOL+=("49mm-ultra:$TYPE_49")
+POOL+=("46mm:$TYPE_46")
+POOL+=("45mm:$TYPE_45")
+POOL+=("41mm:$TYPE_41")
 
-create_device() {
-  local label="$1"
-  local type_id="$2"
-  if [[ -z "$type_id" ]]; then
-    echo "- $label : device type absent, taille ignorée"
-    return
-  fi
-  local name="captures-store-$label"
-  local existing
-  existing=$(xcrun simctl list devices -j | \
-    node -e '(() => {
-      const n = process.argv[1], t = process.argv[2];
-      const d = JSON.parse(require("fs").readFileSync(0,"utf8")).devices || {};
-      for (const k of Object.keys(d)) for (const dev of d[k]) {
-        if (dev.name === n && (dev.deviceTypeIdentifier === t || k.endsWith(t))) {
-          process.stdout.write(dev.udid); return;
-        }
-      }
-    })()' "$name" "$type_id" || true)
-  local udid
-  if [[ -n "$existing" ]]; then
-    udid="$existing"
-  else
-    udid=$(xcrun simctl create "$name" "$type_id" "$WATCH_RUNTIME")
-  fi
-  echo "- $label : $udid ($type_id)"
-  DEVICES+=("$label:$udid")
-  NAMES+=("$name")
-}
-
-create_device "49mm-ultra" "$TYPE_49"
-create_device "46mm"       "$TYPE_46"
-create_device "45mm"       "$TYPE_45"
-create_device "41mm"       "$TYPE_41"
-
-if [[ ${#DEVICES[@]} -eq 0 ]]; then
-  echo "::error::Aucune taille de montre disponible sur le runner."
-  exit 1
-fi
+# Trace des devices à nettoyer en sortie (ceux qu'on a créés et pas encore
+# supprimés — en pratique au plus 1 à la fois).
+CREATED_UDIDS=()
 
 cleanup() {
-  for pair in "${DEVICES[@]}"; do
-    local u="${pair#*:}"
+  for u in "${CREATED_UDIDS[@]}"; do
     [[ -z "$u" ]] && continue
     xcrun simctl shutdown "$u" 2>/dev/null || true
     xcrun simctl delete "$u" 2>/dev/null || true
@@ -176,7 +147,10 @@ boot_device() {
   for attempt in 1 2 3; do
     xcrun simctl shutdown "$udid" 2>/dev/null || true
     sleep 1
-    xcrun simctl boot "$udid" 2>/tmp/boot.err || true
+    xcrun simctl boot "$udid" >/tmp/boot.err 2>&1 || true
+    # On loggue la sortie de boot pour garder la traçabilité qu'avait le
+    # pipeline direct précédent (`xcrun simctl boot "$udid" 2>&1`).
+    [[ -s /tmp/boot.err ]] && sed 's/^/    /' /tmp/boot.err
 
     local statfile="/tmp/bootstatus.$$.$attempt"
     xcrun simctl bootstatus "$udid" -b >"$statfile" 2>&1 &
@@ -365,20 +339,37 @@ shoot_device() {
   done
 }
 
-# Restart CoreSimulatorService entre chaque appareil : le daemon fuit après
-# un cycle complet boot/install/launch×N/screenshot et finit par refuser le
-# device suivant avec « cannot determine the runtime bundle » (vécu run
-# 40755759111 : 49mm + 46mm OK, 45mm + 41mm KO). On préfère payer un restart
-# propre entre chaque device plutôt que perdre la moitié des captures.
+# Pour chaque taille du pool : restart propre du daemon, création d'un
+# device neuf (associé au daemon tout juste redémarré), capture, puis
+# destruction immédiate du device avant de passer au suivant.
 first=1
-for pair in "${DEVICES[@]}"; do
+for pair in "${POOL[@]}"; do
   label="${pair%%:*}"
-  udid="${pair#*:}"
+  type_id="${pair#*:}"
+  if [[ -z "$type_id" ]]; then
+    echo "- $label : device type absent, taille ignorée"
+    continue
+  fi
   if (( first == 0 )); then
     restart_core_simulator
   fi
   first=0
+  name="captures-store-$label-$$"
+  echo
+  echo "## $label : création d'un device neuf ($type_id)"
+  udid=$(xcrun simctl create "$name" "$type_id" "$WATCH_RUNTIME")
+  echo "UDID = $udid"
+  CREATED_UDIDS+=("$udid")
   shoot_device "$udid" "$label"
+  # Suppression immédiate pour alléger le pool avant le device suivant.
+  xcrun simctl shutdown "$udid" 2>/dev/null || true
+  xcrun simctl delete "$udid" 2>/dev/null || true
+  # Retirer de la liste de cleanup (déjà détruit).
+  NEW_CREATED=()
+  for u in "${CREATED_UDIDS[@]}"; do
+    [[ "$u" != "$udid" ]] && NEW_CREATED+=("$u")
+  done
+  CREATED_UDIDS=("${NEW_CREATED[@]}")
 done
 
 # ---------------------------------------------------------------------------

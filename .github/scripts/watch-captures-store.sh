@@ -7,18 +7,21 @@
 #
 # Pour chaque taille de montre disponible sur le runner (Ultra 49 mm,
 # Series 46 mm, Series 45 mm, Series 41/42 mm — on prend celles présentes),
-# pour chaque langue (fr, en), prend 5 captures de la fixture `store` :
-#   01 home            — liste des chasses à venir (boussole : chasses d'abord)
-#   02 hunt            — détail de la chasse (en-tête, statut Présent/Absent)
-#   03 post            — poste 1, avec la FLÈCHE de guidage et la DISTANCE
-#                        (le simulateur est positionné à ~150 m du poste)
-#   04 card            — carte de membre avec QR scannable
-#   05 permit          — permis validé
-#
-# L'écran `hunt-scrolled` n'est PAS pris : watchOS n'expose pas de verbe
-# `simctl` pour scroller la Digital Crown et l'app watch monte directement
-# le détail avec la zone Présent/Absent visible — un deuxième cliché serait
-# un doublon.
+# pour chaque langue (fr, en), prend 6 captures de la fixture `store` :
+#   01 home          — liste des chasses à venir (boussole : chasses d'abord)
+#   02 hunt          — détail de la chasse (en-tête : territoire, heure, RDV)
+#   03 huntActions   — même détail, défilé jusqu'à la météo + Présent / Absent
+#                      (le défilement est fait par un `ScrollViewReader` sous
+#                       `#if DEBUG` dans HuntView — `simctl` ne sait pas
+#                       tourner la Digital Crown)
+#   04 post          — poste 1, avec la FLÈCHE de guidage orientée et la
+#                      DISTANCE (le simulateur est positionné à ~150 m du
+#                      poste, et un `-demoHeading <°>` fournit un cap à
+#                      LocationBridge en Debug pour que la flèche parte
+#                      naturellement vers le poste, sans la mention « Nord
+#                      en haut »)
+#   05 card          — carte de membre avec QR scannable
+#   06 permit        — permis validé
 #
 # Pré-requis dans l'env :
 #   - WATCH_APP_PATH : chemin absolu vers MesChassesWatch.app Debug déjà bâti.
@@ -203,8 +206,40 @@ restart_core_simulator() {
   killall -9 Simulator 2>/dev/null || true
   sudo pkill -9 -f com.apple.CoreSimulator.CoreSimulatorService 2>/dev/null || true
   sleep 5
+  # Deux appels inoffensifs qui forcent launchd à relancer le service, et
+  # réchauffent la découverte des runtimes avant la prochaine création —
+  # sans cette double sollicitation, le 1er `simctl create` qui suit butait
+  # parfois sur « cannot determine the runtime bundle » (runs 40755759111
+  # & 40758454581).
+  xcrun simctl list runtimes >/dev/null 2>&1 || true
   xcrun simctl list devices >/dev/null 2>&1 || true
   sleep 2
+}
+
+# Supprime tous les devices nommés `captures-store-*` qui pourraient rester
+# d'une exécution précédente (crash, timeout, cleanup partiel). Évite qu'un
+# runtime bundle fantôme ne pollue l'inventaire du nouveau daemon.
+cleanup_stale_capture_devices() {
+  local stale
+  stale=$(xcrun simctl list devices -j 2>/dev/null | \
+    node -e '(() => {
+      try {
+        const d = JSON.parse(require("fs").readFileSync(0,"utf8")).devices || {};
+        for (const k of Object.keys(d)) for (const dev of d[k]) {
+          if (dev.name && dev.name.startsWith("captures-store-")) {
+            process.stdout.write(dev.udid + "\n");
+          }
+        }
+      } catch (_) {}
+    })()' 2>/dev/null || true)
+  if [[ -n "$stale" ]]; then
+    echo "  🧹 nettoyage des devices captures-store-* orphelins…"
+    while IFS= read -r udid; do
+      [[ -z "$udid" ]] && continue
+      xcrun simctl shutdown "$udid" 2>/dev/null || true
+      xcrun simctl delete "$udid" 2>/dev/null || true
+    done <<< "$stale"
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -212,23 +247,28 @@ restart_core_simulator() {
 #    6 écrans par (device × langue), tous sur la fixture `store`.
 #    L'ordre numérique guide la lecture dans l'artifact et App Store Connect.
 # ---------------------------------------------------------------------------
-# Format : "numéro écran [extra]" — `extra` peut être `located`.
+# Format : "numéro écran [extra]" — `extra` peut être `located` (= set
+# location + `-demoHeading`).
 SHOTS=(
   "01 home"
   "02 hunt"
-  "03 post located"
-  "04 card"
-  "05 permit"
+  "03 huntActions"
+  "04 post located"
+  "05 card"
+  "06 permit"
 )
 LANGS=(fr en)
 
 # Coordonnées du 1er poste de la fixture `store` (voir DemoMode.swift) :
-# 47.2180, -1.5530. Position du simulateur ~150 m plus au nord-est :
+# 47.2180, -1.5530. Position du simulateur ~150 m au nord-nord-est :
 # +0.0012° lat ≈ 133 m, +0.0005° lng ≈ 38 m → distance ≈ 138 m.
+# Cap du simulateur vers le poste : azimut ≈ 196° (SSW), on arrondit à
+# 200° pour une flèche nettement orientée vers le bas-gauche.
 POST_LAT="47.2180"
 POST_LNG="-1.5530"
 SIM_LAT="47.2192"
 SIM_LNG="-1.5525"
+DEMO_HEADING="200"
 
 # ---------------------------------------------------------------------------
 # 5) Capture d'un device.
@@ -270,13 +310,10 @@ shoot_device() {
     sed 's/^/    /' /tmp/privacy.err || true
   fi
 
-  # Essai status bar override (9:41) — non supporté sur watchOS, on log.
-  if xcrun simctl status_bar "$udid" override --time "9:41" 2>/tmp/sb.err; then
-    echo "  status_bar override 9:41 OK"
-  else
-    echo "  ⚠️ status_bar override non supporté sur watchOS (ignoré) :"
-    sed 's/^/    /' /tmp/sb.err || true
-  fi
+  # Pas de tentative de forcer l'heure de la barre d'état : `simctl status_bar
+  # override` n'est pas supporté sur watchOS (code 45, « Status bar overrides
+  # not supported on this platform » — confirmé runs 40755759111 à 40762138075).
+  # L'heure visible est l'heure réelle du simulateur ; on ne la truque pas.
 
   for lang in "${LANGS[@]}"; do
     for shot in "${SHOTS[@]}"; do
@@ -295,11 +332,17 @@ shoot_device() {
           echo "  ⚠️ simctl location set a échoué (continué quand même)"
       fi
 
-      if ! xcrun simctl launch "$udid" "$BUNDLE_ID" \
-            -demo "store" \
-            -screen "$shot_screen" \
-            -AppleLanguages "($lang)" \
-            -AppleLocale "${lang}_FR" 2>/tmp/launch.err >/dev/null; then
+      # Arguments de lancement. L'écran `post` (= `located`) reçoit un cap
+      # simulé via `-demoHeading` (consommé par `LocationBridge.start()` sous
+      # `#if DEBUG` dans PostView.swift) pour que la flèche de guidage parte
+      # orientée naturellement, sans la mention « Nord en haut » qu'un vrai
+      # Apple Watch n'affiche jamais quand sa boussole fonctionne.
+      launch_args=(-demo store -screen "$shot_screen" -AppleLanguages "($lang)" -AppleLocale "${lang}_FR")
+      if [[ "$shot_extra" == "located" ]]; then
+        launch_args+=(-demoHeading "$DEMO_HEADING")
+      fi
+
+      if ! xcrun simctl launch "$udid" "$BUNDLE_ID" "${launch_args[@]}" 2>/tmp/launch.err >/dev/null; then
         echo "    launch.err :"
         sed 's/^/      /' /tmp/launch.err || true
         if grep -q "server died\|code=-308\|cannot determine the runtime" /tmp/launch.err 2>/dev/null; then
@@ -309,8 +352,7 @@ shoot_device() {
           xcrun simctl install "$udid" "$WATCH_APP_PATH" || true
           xcrun simctl privacy "$udid" grant location "$BUNDLE_ID" 2>/dev/null || true
           [[ "$shot_extra" == "located" ]] && xcrun simctl location "$udid" set "$SIM_LAT,$SIM_LNG" 2>/dev/null || true
-          xcrun simctl launch "$udid" "$BUNDLE_ID" -demo "store" -screen "$shot_screen" \
-            -AppleLanguages "($lang)" -AppleLocale "${lang}_FR" >/dev/null 2>&1 || {
+          xcrun simctl launch "$udid" "$BUNDLE_ID" "${launch_args[@]}" >/dev/null 2>&1 || {
             echo "::warning::launch échoue encore pour $out après restart"; continue;
           }
         else
@@ -346,6 +388,12 @@ shoot_device() {
 # Pour chaque taille du pool : restart propre du daemon, création d'un
 # device neuf (associé au daemon tout juste redémarré), capture, puis
 # destruction immédiate du device avant de passer au suivant.
+#
+# `ATTEMPTED` liste les tailles qu'on A réellement tentées (type disponible
+# sur le runner) — c'est le périmètre du contrôle final de complétude. Si
+# une taille y entre, ses 12 PNG (6 écrans × 2 langues) doivent exister.
+ATTEMPTED=()
+
 first=1
 for pair in "${POOL[@]}"; do
   label="${pair%%:*}"
@@ -355,7 +403,14 @@ for pair in "${POOL[@]}"; do
     continue
   fi
   if (( first == 0 )); then
+    # Entre deux devices : restart agressif. Rund de 40755759111 /
+    # 40758454581 / 40760593496 : au-delà du 1er device, le daemon
+    # CoreSimulatorService refuse de retrouver le runtime bundle. On
+    # redémarre à fond, et on efface tout device « captures-store-* »
+    # résiduel qu'un échec précédent aurait laissé — le daemon neuf doit
+    # repartir d'un plateau propre.
     restart_core_simulator
+    cleanup_stale_capture_devices
   fi
   first=0
   name="captures-store-$label-$$"
@@ -364,12 +419,12 @@ for pair in "${POOL[@]}"; do
   udid=$(xcrun simctl create "$name" "$type_id" "$WATCH_RUNTIME")
   echo "UDID = $udid"
   CREATED_UDIDS+=("$udid")
+  ATTEMPTED+=("$label")
   shoot_device "$udid" "$label"
   # Suppression immédiate pour alléger le pool avant le device suivant.
   xcrun simctl shutdown "$udid" 2>/dev/null || true
   xcrun simctl delete "$udid" 2>/dev/null || true
-  # Retirer de la liste de cleanup (déjà détruit). Un tableau vide avec
-  # `set -u` fait exploser `${arr[@]}` → on reconstruit par itération.
+  # Retirer de la liste de cleanup (déjà détruit).
   NEW_CREATED=()
   if [[ ${#CREATED_UDIDS[@]} -gt 0 ]]; then
     for u in "${CREATED_UDIDS[@]}"; do
@@ -384,18 +439,23 @@ done
 
 # ---------------------------------------------------------------------------
 # 6) Vérifications finales.
-#    - Toutes les captures attendues sont présentes et de taille raisonnable.
+#    - Chaque taille présente dans `ATTEMPTED` doit avoir TOUTES ses captures
+#      (6 écrans × 2 langues = 12 PNG) — sinon ::error:: + exit 1.
 #    - Deux captures d'écrans DIFFÉRENTS de la même langue × device ne doivent
 #      PAS être identiques (SHA256) : empêche un fallback silencieux ou un
 #      crash qui laisserait la montre sur l'accueil pour chaque écran.
 # ---------------------------------------------------------------------------
 echo
 echo "## Vérification des captures"
+echo "Tailles tentées : ${ATTEMPTED[*]:-aucune}"
+if [[ ${#ATTEMPTED[@]} -eq 0 ]]; then
+  echo "::error::Aucune taille n'a été tentée (le pool est vide)."
+  exit 1
+fi
+
 missing=0
 too_small=0
-EXPECTED_PER_PAIR=${#SHOTS[@]}
-for pair in "${DEVICES[@]}"; do
-  size_label="${pair%%:*}"
+for size_label in "${ATTEMPTED[@]}"; do
   for lang in "${LANGS[@]}"; do
     for shot in "${SHOTS[@]}"; do
       read -r shot_num shot_screen _ <<<"$shot"
@@ -426,12 +486,11 @@ sha_of() { shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'; }
 echo
 echo "## Contrôle d'empreintes (SHA256) — deux écrans ≠ ne peuvent pas être identiques"
 dup_screen=0
-for pair in "${DEVICES[@]}"; do
-  size_label="${pair%%:*}"
+for size_label in "${ATTEMPTED[@]}"; do
   for lang in "${LANGS[@]}"; do
-    # Chaque écran de détail (hunt, post, card, permit) doit différer de
-    # l'accueil : empêche un fallback silencieux ou un crash qui laisserait
-    # la montre sur l'accueil.
+    # Chaque écran de détail (hunt, huntActions, post, card, permit) doit
+    # différer de l'accueil : empêche un fallback silencieux ou un crash
+    # qui laisserait la montre sur l'accueil pour chaque écran.
     for shot in "${SHOTS[@]}"; do
       read -r shot_num shot_screen _ <<<"$shot"
       [[ "$shot_num" == "01" ]] && continue
@@ -443,6 +502,17 @@ for pair in "${DEVICES[@]}"; do
         dup_screen=$((dup_screen+1))
       fi
     done
+    # Et hunt (02) doit différer de huntActions (03) : si l'écran défilé est
+    # identique à l'écran de tête, c'est que le ScrollViewReader n'a pas
+    # scrollé (régression DemoMode ou Debug coupé).
+    hunt="$OUTDIR/${size_label}-${lang}-02-hunt.png"
+    hunt_actions="$OUTDIR/${size_label}-${lang}-03-huntActions.png"
+    if [[ -s "$hunt" && -s "$hunt_actions" ]]; then
+      if [[ "$(sha_of "$hunt")" == "$(sha_of "$hunt_actions")" ]]; then
+        echo "::error::$hunt_actions identique à $hunt (ScrollViewReader n'a pas défilé)"
+        dup_screen=$((dup_screen+1))
+      fi
+    fi
   done
 done
 

@@ -1,10 +1,17 @@
 name: Watch Core — Swift tests
 
-# Tests unitaires du paquet SwiftPM `apps/mobile/watch-core` (modèle,
-# stockage, PhoneLink, etc.). Lancés sur runner macOS sans simulateur :
-# `swift test` compile et exécute XCTest nativement, bien plus rapidement
-# qu'un build iOS complet. La Tâche 11 étendra ce workflow (prebuild Expo,
-# xcodebuild, captures d'écran). En attendant, un `workflow_dispatch` nu.
+# Deux jobs indépendants :
+#   • swift-test  : tests unitaires du paquet SwiftPM `apps/mobile/watch-core`
+#     (modèle, stockage, PhoneLink, HomeModel, PostGuidance, QrImage, etc.).
+#     Rapide — compile et exécute XCTest nativement sur macOS, sans simulateur.
+#   • watch-build : compile les cibles watchOS (app montre + complications)
+#     SANS signing ni upload, pour vérifier qu'une évolution Swift côté watch
+#     n'a pas cassé le build Xcode des cibles réelles. Pas de TestFlight :
+#     décision utilisateur, aucun binaire ne quitte le runner.
+#
+# La Tâche 11 étendra `watch-build` avec des captures de simulateur (via
+# `-demo <fixture>` dans l'app). En attendant, un simple `xcodebuild build`
+# pour `generic/platform=watchOS Simulator`.
 
 on:
   workflow_dispatch:
@@ -55,3 +62,112 @@ jobs:
           # passe inaperçu (vécu le 2026-10-27, run 40588312474).
           set -o pipefail
           swift test --package-path apps/mobile/watch-core 2>&1 | tee "$GITHUB_STEP_SUMMARY"
+
+  # Compile les cibles watchOS (app montre + complications) sans signing ni
+  # upload. Objectif : valider à chaque PR qui touche aux sources Swift que
+  # les cibles réelles compilent toujours — garantie que l'iOS TestFlight (le
+  # jour où watch=true sera activé) ne pétera pas sur un symbole / une arch /
+  # un fichier manquant. Ce job valide aussi au passage les contrats @MainActor
+  # côté PhoneLink (Tâche 5) qu'un `swift test` sur macOS ne voit pas.
+  watch-build:
+    runs-on: xcode-27
+    timeout-minutes: 45
+    environment: production
+
+    steps:
+      - name: Checkout monorepo
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          repository: ${{ secrets.MONOREPO_REPO }}
+          token: ${{ secrets.CI_PAT_TOKEN }}
+          path: app
+          ref: ${{ inputs.monorepo_ref }}
+
+      - name: Trace du commit testé
+        run: |
+          echo "Commit monorepo : $(git -C app rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Select Xcode 27.1
+        run: |
+          XCODE_PATH=/Applications/Xcode_27.1.app
+          [ -d "$XCODE_PATH" ] || { echo "::error::Xcode 27.1 introuvable ($XCODE_PATH)"; exit 1; }
+          sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
+          xcodebuild -version | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4 (Node 20)
+        with:
+          version: 9
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: app/pnpm-lock.yaml
+
+      - name: Cache CocoaPods
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cocoapods
+            ~/Library/Caches/CocoaPods
+          key: pods-watch-${{ runner.os }}-${{ hashFiles('app/pnpm-lock.yaml') }}
+          restore-keys: pods-watch-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: cd app && pnpm install --frozen-lockfile
+
+      # Prebuild Expo avec MESCHASSES_WATCH=1 pour que app.config.js étende le
+      # glob @bacons/apple-targets aux cibles `watch` et `watch-widget`, et que
+      # `withWatchCoreSources` copie les sources partagées dans chaque cible.
+      # On ne pousse PAS plus loin que la génération du projet Xcode + pods :
+      # pas de signing, pas d'archive, pas d'upload.
+      - name: Expo prebuild (iOS, MESCHASSES_WATCH=1)
+        working-directory: app/apps/mobile
+        env:
+          MESCHASSES_WATCH: "1"
+          # Bundle id partagé avec l'app live : ne pas resyncer les capabilities.
+          EXPO_NO_CAPABILITY_SYNC: "1"
+        run: |
+          npx expo prebuild --platform ios --no-install --non-interactive --clean
+
+      - name: pod install
+        working-directory: app/apps/mobile/ios
+        run: |
+          pod install --repo-update
+
+      # xcodebuild build des cibles watchOS. CODE_SIGNING_ALLOWED=NO : on
+      # cherche à vérifier que ça compile, pas à produire un binaire signé.
+      # `generic/platform=watchOS Simulator` évite d'avoir à sélectionner un
+      # simulateur précis par son UDID.
+      - name: xcodebuild — MesChassesWatch (app montre)
+        working-directory: app/apps/mobile/ios
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -workspace MesChasses.xcworkspace \
+            -scheme MesChassesWatch \
+            -configuration Debug \
+            -destination 'generic/platform=watchOS Simulator' \
+            -skipPackagePluginValidation \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY= \
+            build 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" | tail -200
+
+      - name: xcodebuild — MesChassesWatchComplications (complications)
+        working-directory: app/apps/mobile/ios
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -workspace MesChasses.xcworkspace \
+            -scheme MesChassesWatchComplications \
+            -configuration Debug \
+            -destination 'generic/platform=watchOS Simulator' \
+            -skipPackagePluginValidation \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY= \
+            build 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" | tail -200

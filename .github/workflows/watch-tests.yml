@@ -310,8 +310,82 @@ jobs:
           check_lang fr "Mes Chasses utilise votre position pour vous guider jusqu'à votre poste."
           check_lang en "Mes Chasses uses your location to guide you to your post."
 
+          # Textes HealthKit (Tâche 6) : NSHealthShareUsageDescription + NSHealthUpdateUsageDescription,
+          # localisés FR + EN. Même mécanisme que la position (InfoPlist.xcstrings).
+          check_lang_key() {
+            local lang="$1" key="$2" expected="$3" f="$APP/$1.lproj/InfoPlist.strings" got
+            if [ ! -f "$f" ]; then
+              echo "::error::$f manquant (clé $key non localisée en $lang)"
+              fail=1
+              return
+            fi
+            got=$(plutil -extract "$key" raw -o - "$f" 2>/dev/null || true)
+            if [ "$got" != "$expected" ]; then
+              echo "::error::$lang / $key : '${got}' (attendu : '${expected}')"
+              fail=1
+            fi
+          }
+          check_lang_key fr NSHealthShareUsageDescription "Mes Chasses utilise la séance « Chasse » pour garder la montre active pendant la battue."
+          check_lang_key en NSHealthShareUsageDescription "Mes Chasses uses the Hunt workout to keep the watch awake during the drive."
+          check_lang_key fr NSHealthUpdateUsageDescription "Mes Chasses enregistre vos battues dans Santé seulement si vous activez le réglage « Enregistrer mes battues dans Santé »."
+          check_lang_key en NSHealthUpdateUsageDescription "Mes Chasses only saves your hunts to Health if you turn on the setting \"Save my hunts to Health\"."
+
+          # UIBackgroundModes doit porter workout-processing (sinon HKWorkoutSession ne tient pas
+          # écran éteint — le mode battue devient inutile).
+          BG=$(plutil -extract UIBackgroundModes json -o - "$PLIST" 2>/dev/null || echo "")
+          case "$BG" in
+            *workout-processing*) ;;
+            *)
+              echo "::error::UIBackgroundModes ne contient pas workout-processing (got: ${BG:-<vide>})"
+              fail=1
+              ;;
+          esac
+
           [ "$fail" -eq 0 ] || exit 1
           echo "Contrôle Info.plist montre : OK" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # Contrôle des entitlements compilés (Tâche 6).
+      # Pourquoi NE PAS utiliser `codesign -d --entitlements` : la cible watch est
+      # construite ici en CODE_SIGNING_ALLOWED=NO (pas de signature → `codesign` renvoie
+      # "code object is not signed at all"). On inspecte à la place le fichier
+      # `.entitlements` fourni au build (celui que @bacons/apple-targets a généré depuis
+      # expo-target.config.js) : chemin via `xcodebuild -showBuildSettings`.
+      - name: Contrôle entitlement HealthKit (watch)
+        working-directory: app/apps/mobile/ios
+        run: |
+          set -uo pipefail
+          # Résout CODE_SIGN_ENTITLEMENTS de la cible watch (chemin relatif au projet Xcode).
+          ENT_REL=$(xcodebuild \
+            -project MesChasses.xcodeproj \
+            -target MesChassesWatch \
+            -configuration Debug \
+            -sdk watchsimulator \
+            -showBuildSettings 2>/dev/null \
+            | awk -F' = ' '/^ *CODE_SIGN_ENTITLEMENTS/ {print $2; exit}')
+          echo "CODE_SIGN_ENTITLEMENTS = ${ENT_REL:-<vide>}"
+          if [ -z "$ENT_REL" ]; then
+            echo "::error::Aucun CODE_SIGN_ENTITLEMENTS déclaré pour MesChassesWatch"
+            exit 1
+          fi
+          ENT_PATH="$ENT_REL"
+          [ -f "$ENT_PATH" ] || ENT_PATH="$PWD/$ENT_REL"
+          [ -f "$ENT_PATH" ] || {
+            echo "::error::Fichier d'entitlements introuvable : $ENT_REL"
+            find . -maxdepth 4 -name '*.entitlements' | head -20
+            exit 1
+          }
+          {
+            echo "## Entitlements (watch)"
+            echo '```'
+            plutil -p "$ENT_PATH"
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          HK=$(plutil -extract com.apple.developer.healthkit raw -o - "$ENT_PATH" 2>/dev/null || echo "")
+          if [ "$HK" != "true" ] && [ "$HK" != "1" ]; then
+            echo "::error::com.apple.developer.healthkit absent ou faux dans $ENT_REL (got: ${HK:-<vide>})"
+            exit 1
+          fi
+          echo "Entitlement HealthKit : OK" | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: xcodebuild build — MesChassesWatchComplications (complications)
         working-directory: app/apps/mobile/ios

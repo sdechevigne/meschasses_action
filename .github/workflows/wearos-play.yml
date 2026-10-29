@@ -25,7 +25,8 @@ on:
           - "wear:production"
         default: "wear:internal"
 
-# Repo PUBLIC : le GITHUB_TOKEN n'est utilisé par aucun step. Retrait total.
+# Repo PUBLIC : le GITHUB_TOKEN n'est utilisé par aucun step du job. Un seul
+# `permissions: {}` au niveau workflow suffit — pas de redondance au niveau job.
 permissions: {}
 
 # Deux dispatches concurrents sur la même piste s'annulent ; une publication en
@@ -39,8 +40,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     environment: production
-    permissions:
-      contents: read
 
     steps:
       # Checkout du monorepo (apps/wearos) via le PAT dédié.
@@ -91,6 +90,10 @@ jobs:
       # Clé d'upload Android : matérialisée dans apps/wearos/release.keystore (gitignoré
       # dans le monorepo). Mêmes 4 secrets que expo-android-play.yml (Play App Signing
       # partagé — package com.meschasses commun à toutes les variantes de l'app).
+      # Fallback côté app : si `WEAROS_KEY_PASSWORD` manque, `app/build.gradle.kts` retombe
+      # sur `WEAROS_KEYSTORE_PASSWORD` (clé upload Mes Chasses : les deux mots de passe sont
+      # identiques dans Play App Signing). Ici on garde les 4 secrets séparés, par symétrie
+      # avec le workflow téléphone, pour qu'un futur rotation de l'un seul reste possible.
       - name: Write Android upload keystore
         env:
           ANDROID_KEYSTORE_FILE: ${{ secrets.ANDROID_KEYSTORE_FILE }}
@@ -112,11 +115,18 @@ jobs:
       - name: Inject versionCode / versionName
         env:
           VERSION_CODE: ${{ env.VERSION_CODE }}
+          VERSION_NAME: 1.0.${{ github.run_number }}
         run: |
           set -e
           sed -i "s/^\\(\\s*\\)versionCode = .*/\\1versionCode = ${VERSION_CODE}/" app/apps/wearos/app/build.gradle.kts
-          sed -i "s/^\\(\\s*\\)versionName = .*/\\1versionName = \"1.0.${{ github.run_number }}\"/" app/apps/wearos/app/build.gradle.kts
-          grep -E "^\\s*(versionCode|versionName) = " app/apps/wearos/app/build.gradle.kts
+          sed -i "s/^\\(\\s*\\)versionName = .*/\\1versionName = \"${VERSION_NAME}\"/" app/apps/wearos/app/build.gradle.kts
+          # Vérifie que l'injection a réellement eu lieu : si sed n'a rien remplacé (ancre
+          # modifiée, fichier déplacé), on sort en erreur AVANT d'engager un build long.
+          grep -E "^\\s*versionCode = ${VERSION_CODE}$" app/apps/wearos/app/build.gradle.kts \
+            || { echo "::error::versionCode non injecté dans build.gradle.kts"; exit 1; }
+          grep -E "^\\s*versionName = \"${VERSION_NAME}\"$" app/apps/wearos/app/build.gradle.kts \
+            || { echo "::error::versionName non injecté dans build.gradle.kts"; exit 1; }
+          echo "RELEASE_NAME=${VERSION_NAME} (${VERSION_CODE})" >> "$GITHUB_ENV"
 
       # Build release signé via wear.sh (image Docker Android épinglée, cache Gradle
       # dans un volume Docker). Les 4 variables WEAROS_* sont consommées par
@@ -152,6 +162,10 @@ jobs:
           GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
           AAB_PATH: app/apps/wearos/app/build/outputs/bundle/release/app-release.aab
           PLAY_TRACK: ${{ inputs.track }}
+          # Nom de la release visible dans la console Play : « versionName (versionCode) »,
+          # même convention que le workflow téléphone (expo-android-play.yml) : repère
+          # univoque pour relier une release Play à son run CI.
+          RELEASE_NAME: ${{ env.RELEASE_NAME }}
         run: node ci/.github/scripts/publish-google-play-wearos-track.mjs
 
       # Nettoyage : .aab, keystore, cache Gradle local (le vrai cache vit dans un

@@ -7,7 +7,7 @@
 #
 # Pour chaque taille de montre disponible sur le runner (Ultra 49 mm,
 # Series 46 mm, Series 45 mm, Series 41/42 mm — on prend celles présentes),
-# pour chaque langue (fr, en), prend 6 captures de la fixture `store` :
+# pour chaque langue (fr, en), prend 8 captures de la fixture `store` :
 #   01 home          — liste des chasses à venir (boussole : chasses d'abord)
 #   02 hunt          — détail de la chasse (en-tête : territoire, heure, RDV)
 #   03 huntActions   — même détail, défilé jusqu'à la météo + Présent / Absent
@@ -21,7 +21,9 @@
 #                      naturellement vers le poste, sans la mention « Nord
 #                      en haut »)
 #   05 card          — carte de membre avec QR scannable
-#   06 permit        — permis validé
+#   06 permit        — pastille permis V1 (compat)
+#   07 permitFull    — permis V2 complet (titulaire, validation, assurance)
+#   08 horns         — sonneries résolues de la 1re chasse (Tâche 3)
 #
 # Pré-requis dans l'env :
 #   - WATCH_APP_PATH : chemin absolu vers MesChassesWatch.app Debug déjà bâti.
@@ -238,6 +240,8 @@ SHOTS=(
   "04 post located"
   "05 card"
   "06 permit"
+  "07 permitFull"
+  "08 horns"
 )
 LANGS=(fr en)
 

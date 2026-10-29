@@ -70,6 +70,25 @@ jobs:
           sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
           xcodebuild -version | tee -a "$GITHUB_STEP_SUMMARY"
 
+      - name: Télécharger le runtime watchOS si manquant
+        # Xcode 27.1 sur ce runner ne vient plus avec le runtime watchOS préinstallé
+        # (`xcrun simctl list runtimes watchOS` renvoyait une liste vide, run 40969326562
+        # échouait avec « Aucun runtime watchOS disponible »). On tente d'abord la
+        # version qui va avec Xcode 27.1 (watchOS 11), puis on retente sans contrainte
+        # de version si ça n'a pas été résolu.
+        run: |
+          set -o pipefail
+          if xcrun simctl list runtimes watchOS -j | node -e '(() => {
+            const r = JSON.parse(require("fs").readFileSync(0,"utf8")).runtimes || [];
+            if (r.filter(x => x.isAvailable !== false).length === 0) process.exit(2);
+          })()'; then
+            echo "runtime watchOS déjà disponible" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## Téléchargement du runtime watchOS" | tee -a "$GITHUB_STEP_SUMMARY"
+            xcodebuild -downloadPlatform watchOS 2>&1 | tail -5 | tee -a "$GITHUB_STEP_SUMMARY" || echo "::warning::téléchargement du runtime watchOS a échoué"
+            xcrun simctl list runtimes watchOS | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+
       - name: Setup pnpm
         uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4 (Node 20)
         with:

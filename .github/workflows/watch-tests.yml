@@ -325,8 +325,8 @@ jobs:
               fail=1
             fi
           }
-          check_lang_key fr NSHealthShareUsageDescription "Mes Chasses utilise la séance « Chasse » pour garder la montre active pendant la battue."
-          check_lang_key en NSHealthShareUsageDescription "Mes Chasses uses the Hunt workout to keep the watch awake during the drive."
+          check_lang_key fr NSHealthShareUsageDescription "La montre peut se mettre en veille."
+          check_lang_key en NSHealthShareUsageDescription "The watch can go to sleep."
           check_lang_key fr NSHealthUpdateUsageDescription "Mes Chasses enregistre vos battues dans Santé seulement si vous activez le réglage « Enregistrer mes battues dans Santé »."
           check_lang_key en NSHealthUpdateUsageDescription "Mes Chasses only saves your hunts to Health if you turn on the setting \"Save my hunts to Health\"."
 

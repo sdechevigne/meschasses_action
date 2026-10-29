@@ -10,7 +10,7 @@
 // Variables : GOOGLE_PLAY_SERVICE_ACCOUNT_JSON (secret), PLAY_PACKAGE_NAME
 // (défaut com.meschasses), ACTION, PLAY_USER_FRACTION (si ACTION=fraction).
 
-import crypto from 'node:crypto';
+import { accessToken, makeCall, createEdit, deleteEdit } from './lib/play.mjs';
 
 const PACKAGE = process.env.PLAY_PACKAGE_NAME || 'com.meschasses';
 const ACTION = process.env.ACTION;
@@ -29,39 +29,11 @@ if (ACTION === 'fraction') {
   if (!(fraction > 0 && fraction < 1)) fail('PLAY_USER_FRACTION doit être strictement entre 0 et 1 (ex. 0.5).');
 }
 
-const b64url = (buf) =>
-  Buffer.from(buf).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-
-async function accessToken() {
-  const sa = JSON.parse(process.env.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON);
-  const tokenUri = sa.token_uri || 'https://oauth2.googleapis.com/token';
-  const now = Math.floor(Date.now() / 1000);
-  const claims = { iss: sa.client_email, scope: 'https://www.googleapis.com/auth/androidpublisher', aud: tokenUri, iat: now, exp: now + 3600 };
-  const input = `${b64url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }))}.${b64url(JSON.stringify(claims))}`;
-  const sig = crypto.sign('RSA-SHA256', Buffer.from(input), sa.private_key);
-  const res = await fetch(tokenUri, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion: `${input}.${b64url(sig)}` }),
-  });
-  const json = await res.json().catch(() => ({}));
-  if (!res.ok || !json.access_token) throw new Error(`Authentification Google refusée (${res.status} ${json.error || ''}).`);
-  return json.access_token;
-}
-
 async function main() {
-  const token = await accessToken();
-  const call = async (url, opts = {}) => {
-    const res = await fetch(url, {
-      ...opts,
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...(opts.headers || {}) },
-    });
-    const text = await res.text();
-    if (!res.ok) throw new Error(`${opts.method || 'GET'} ${url.replace(/^https:\/\/[^/]+/, '')} → ${res.status}: ${text}`);
-    return text ? JSON.parse(text) : {};
-  };
+  const token = await accessToken(process.env.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON);
+  const call = makeCall(token);
 
-  const editId = (await call(`${API}/edits`, { method: 'POST', body: '{}' })).id;
+  const editId = await createEdit(call, API);
   const edit = `${API}/edits/${editId}`;
   let committed = false;
   try {
@@ -84,7 +56,7 @@ async function main() {
         ? `⏸️ Déploiement en PAUSE (${staged.name}) : plus aucun nouvel utilisateur servi.`
         : `🎉 Déploiement complété à 100 % (${staged.name}).`);
   } finally {
-    if (!committed) await call(edit, { method: 'DELETE' }).catch(() => {});
+    if (!committed) await deleteEdit(call, edit);
   }
 }
 

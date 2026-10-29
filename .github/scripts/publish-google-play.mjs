@@ -25,9 +25,9 @@
 //   NOUVEAUTES_DIR     - dossier des nouveautés (défaut app/apps/mobile/store/nouveautes)
 //   CHECK_ONLY         - "1" pour le contrôle en lecture seule
 
-import crypto from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { notesForLocale, readNouveautes } from './lib/nouveautes.mjs';
+import { accessToken, makeCall, createEdit, deleteEdit } from './lib/play.mjs';
 
 const CHECK_ONLY = process.env.CHECK_ONLY === '1';
 // Déploiement par paliers : fraction d'utilisateurs servie (0 < f < 1), vide = 100 %.
@@ -52,37 +52,6 @@ const fail = (msg) => {
 if (!process.env.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON) fail('GOOGLE_PLAY_SERVICE_ACCOUNT_JSON manquant');
 if (!CHECK_ONLY && !AAB_PATH) fail('AAB_PATH manquant');
 
-const b64url = (buf) =>
-  Buffer.from(buf).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-
-async function accessToken() {
-  const sa = JSON.parse(process.env.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON);
-  const tokenUri = sa.token_uri || 'https://oauth2.googleapis.com/token';
-  const now = Math.floor(Date.now() / 1000);
-  const claims = {
-    iss: sa.client_email,
-    scope: 'https://www.googleapis.com/auth/androidpublisher',
-    aud: tokenUri,
-    iat: now,
-    exp: now + 3600,
-  };
-  const input = `${b64url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }))}.${b64url(JSON.stringify(claims))}`;
-  const sig = crypto.sign('RSA-SHA256', Buffer.from(input), sa.private_key);
-  const res = await fetch(tokenUri, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
-      assertion: `${input}.${b64url(sig)}`,
-    }),
-  });
-  const json = await res.json().catch(() => ({}));
-  if (!res.ok || !json.access_token) {
-    throw new Error(`Authentification Google refusée (${res.status} ${json.error || ''}).`);
-  }
-  return json.access_token;
-}
-
 async function main() {
   const version = JSON.parse(readFileSync(APP_JSON, 'utf8')).expo?.version;
   if (!version) throw new Error(`expo.version absente de ${APP_JSON}`);
@@ -98,18 +67,10 @@ async function main() {
   }
 
   // Un jeton dure 1 h : largement assez pour un edit (upload compris).
-  const token = await accessToken();
-  const call = async (url, opts = {}) => {
-    const res = await fetch(url, {
-      ...opts,
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...(opts.headers || {}) },
-    });
-    const text = await res.text();
-    if (!res.ok) throw new Error(`${opts.method || 'GET'} ${url.replace(/^https:\/\/[^/]+/, '')} → ${res.status}: ${text}`);
-    return text ? JSON.parse(text) : {};
-  };
+  const token = await accessToken(process.env.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON);
+  const call = makeCall(token);
 
-  const editId = (await call(`${API}/edits`, { method: 'POST', body: '{}' })).id;
+  const editId = await createEdit(call, API);
   const edit = `${API}/edits/${editId}`;
   let committed = false;
   try {
@@ -159,7 +120,7 @@ async function main() {
       : `🎉 Version ${version} (${versionCode}) envoyée en production à 100 % : publication après examen Google.`);
   } finally {
     // Un edit non commité est abandonné proprement (sinon il bloque les suivants).
-    if (!committed) await call(edit, { method: 'DELETE' }).catch(() => {});
+    if (!committed) await deleteEdit(call, edit);
   }
 }
 

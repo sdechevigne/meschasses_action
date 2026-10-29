@@ -1,0 +1,161 @@
+name: Wear OS Play
+
+# App Wear OS « Mes Chasses » (Kotlin, apps/wearos du monorepo) : build release
+# signé via Gradle (image Docker Android épinglée du monorepo), envoi sur la piste
+# wear:internal de Google Play. Modelé sur expo-android-play.yml.
+# versionCode = 3 000 000 + github.run_number (le téléphone utilise 2 100 000 +
+# son run_number : aucun croisement possible).
+# Clé de signature : SECRETS ANDROID_KEYSTORE_* (mêmes que l'app téléphone, Play
+# App Signing partage le même package com.meschasses).
+
+on:
+  workflow_dispatch:
+    inputs:
+      monorepo_ref:
+        description: "Branche (ou SHA complet) du monorepo à construire — vide = branche par défaut"
+        required: false
+        default: ""
+      track:
+        description: "Piste Google Play Wear OS cible"
+        type: choice
+        options:
+          - "wear:internal"
+          - "wear:alpha"
+          - "wear:beta"
+          - "wear:production"
+        default: "wear:internal"
+
+# Repo PUBLIC : le GITHUB_TOKEN n'est utilisé par aucun step. Retrait total.
+permissions: {}
+
+# Deux dispatches concurrents sur la même piste s'annulent ; une publication en
+# cours sur une piste différente ne les touche pas.
+concurrency:
+  group: wearos-play-${{ inputs.track || 'wear:internal' }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: production
+    permissions:
+      contents: read
+
+    steps:
+      # Checkout du monorepo (apps/wearos) via le PAT dédié.
+      - name: Checkout monorepo
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          repository: ${{ secrets.MONOREPO_REPO }}
+          token: ${{ secrets.CI_PAT_TOKEN }}
+          path: app
+          # Vide = branche par défaut du monorepo. Passé via `with:` → pas d'injection shell.
+          ref: ${{ inputs.monorepo_ref }}
+
+      # Scripts CI de CE repo (public) : checkout sans token.
+      - name: Checkout scripts CI
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          path: ci
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+
+      # Clé de service Google Play (secret) : utilisée en lecture AVANT build pour
+      # garantir que le versionCode choisi dépasse tous ceux déjà présents sur la
+      # fiche (toutes pistes confondues). Si la garde échoue, on n'a consommé ni
+      # minutes de build ni numéro de build (fail-fast).
+      - name: Compute build number
+        env:
+          OFFSET: "3000000"
+        run: |
+          BN=$(( ${{ github.run_number }} + OFFSET ))
+          echo "VERSION_CODE=$BN" >> "$GITHUB_ENV"
+
+      # Garde-fou : versionCode projeté > max déjà présent sur la fiche (toutes
+      # pistes). Vérifie aussi que la piste Wear OS est joignable (format Wear OS
+      # activé dans la fiche). Mode CHECK_ONLY : rien publié, pas d'edit laissé.
+      - name: Contrôles Play (versionCode + piste wear:internal)
+        env:
+          GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
+          VERSION_CODE: ${{ env.VERSION_CODE }}
+          PLAY_TRACK: ${{ inputs.track }}
+          CHECK_ONLY: "1"
+        run: node ci/.github/scripts/publish-google-play-wearos-track.mjs
+
+      # Clé d'upload Android : matérialisée dans apps/wearos/release.keystore (gitignoré
+      # dans le monorepo). Mêmes 4 secrets que expo-android-play.yml (Play App Signing
+      # partagé — package com.meschasses commun à toutes les variantes de l'app).
+      - name: Write Android upload keystore
+        env:
+          ANDROID_KEYSTORE_FILE: ${{ secrets.ANDROID_KEYSTORE_FILE }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -e
+          [ -n "$ANDROID_KEYSTORE_FILE" ] || { echo "::error::ANDROID_KEYSTORE_FILE manquant"; exit 1; }
+          [ -n "$ANDROID_KEYSTORE_PASSWORD" ] || { echo "::error::ANDROID_KEYSTORE_PASSWORD manquant"; exit 1; }
+          [ -n "$ANDROID_KEY_ALIAS" ] || { echo "::error::ANDROID_KEY_ALIAS manquant"; exit 1; }
+          [ -n "$ANDROID_KEY_PASSWORD" ] || { echo "::error::ANDROID_KEY_PASSWORD manquant"; exit 1; }
+          echo "$ANDROID_KEYSTORE_FILE" | base64 -d > app/apps/wearos/release.keystore
+          test -s app/apps/wearos/release.keystore
+
+      # Injection du versionCode dans build.gradle.kts : les lignes "versionCode = 1"
+      # (defaultConfig) et "versionName" sont réécrites par sed. Le versionName suit
+      # pour l'affichage, pas pour l'ordre.
+      - name: Inject versionCode / versionName
+        env:
+          VERSION_CODE: ${{ env.VERSION_CODE }}
+        run: |
+          set -e
+          sed -i "s/^\\(\\s*\\)versionCode = .*/\\1versionCode = ${VERSION_CODE}/" app/apps/wearos/app/build.gradle.kts
+          sed -i "s/^\\(\\s*\\)versionName = .*/\\1versionName = \"1.0.${{ github.run_number }}\"/" app/apps/wearos/app/build.gradle.kts
+          grep -E "^\\s*(versionCode|versionName) = " app/apps/wearos/app/build.gradle.kts
+
+      # Build release signé via wear.sh (image Docker Android épinglée, cache Gradle
+      # dans un volume Docker). Les 4 variables WEAROS_* sont consommées par
+      # app/build.gradle.kts (signingConfig release). Le keystore est à l'intérieur
+      # du dépôt → chemin relatif au module app (release.keystore à la racine wearos).
+      - name: Build bundleRelease signé
+        env:
+          CI: "1"
+          WEAROS_KEYSTORE_FILE: ../release.keystore
+          WEAROS_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          WEAROS_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          WEAROS_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        working-directory: app
+        run: |
+          set -e
+          apps/wearos/scripts/wear.sh build :app:bundleRelease
+          test -f apps/wearos/app/build/outputs/bundle/release/app-release.aab
+
+      # bundletool épinglé (version + empreinte) : utilisé par verifier-minimums.mjs
+      # pour contrôler que l'.aab livre bien minSdk 30 (Wear OS 3+).
+      - name: Installer bundletool
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/bundletool.jar" https://github.com/google/bundletool/releases/download/1.18.3/bundletool-all-1.18.3.jar
+          echo "a099cfa1543f55593bc2ed16a70a7c67fe54b1747bb7301f37fdfd6d91028e29  $RUNNER_TEMP/bundletool.jar" | sha256sum -c -
+
+      - name: Contrôle minSdk (.aab Wear OS)
+        env:
+          MIN_ANDROID: "30"
+        run: node ci/.github/scripts/verifier-minimums.mjs android app/apps/wearos/app/build/outputs/bundle/release/app-release.aab "$RUNNER_TEMP/bundletool.jar"
+
+      - name: Envoi sur la piste Wear OS Google Play
+        env:
+          GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
+          AAB_PATH: app/apps/wearos/app/build/outputs/bundle/release/app-release.aab
+          PLAY_TRACK: ${{ inputs.track }}
+        run: node ci/.github/scripts/publish-google-play-wearos-track.mjs
+
+      # Nettoyage : .aab, keystore, cache Gradle local (le vrai cache vit dans un
+      # volume Docker, inaccessible après la fin du conteneur).
+      - name: Wipe build outputs and secrets
+        if: always()
+        run: rm -f app/apps/wearos/release.keystore app/apps/wearos/app/build/outputs/bundle/release/app-release.aab

@@ -7,23 +7,37 @@
 #
 # Pour chaque taille de montre disponible sur le runner (Ultra 49 mm,
 # Series 46 mm, Series 45 mm, Series 41/42 mm — on prend celles présentes),
-# pour chaque langue (fr, en), prend 8 captures de la fixture `store` :
-#   01 home          — liste des chasses à venir (boussole : chasses d'abord)
-#   02 hunt          — détail de la chasse (en-tête : territoire, heure, RDV)
-#   03 huntActions   — même détail, défilé jusqu'à la météo + Présent / Absent
-#                      (le défilement est fait par un `ScrollViewReader` sous
-#                       `#if DEBUG` dans HuntView — `simctl` ne sait pas
-#                       tourner la Digital Crown)
-#   04 post          — poste 1, avec la FLÈCHE de guidage orientée et la
-#                      DISTANCE (le simulateur est positionné à ~150 m du
-#                      poste, et un `-demoHeading <°>` fournit un cap à
-#                      LocationBridge en Debug pour que la flèche parte
-#                      naturellement vers le poste, sans la mention « Nord
-#                      en haut »)
-#   05 card          — carte de membre avec QR scannable
-#   06 permit        — pastille permis V1 (compat)
-#   07 permitFull    — permis V2 complet (titulaire, validation, assurance)
-#   08 horns         — sonneries résolues de la 1re chasse (Tâche 3)
+# pour chaque langue (fr, en), prend 13 captures de la fixture `store` :
+#   01 home             — liste des chasses à venir (boussole : chasses d'abord)
+#   02 hunt             — détail de la chasse (en-tête : territoire, heure, RDV)
+#   03 huntActions      — même détail, défilé jusqu'à la météo + Présent / Absent
+#                         (le défilement est fait par un `ScrollViewReader` sous
+#                          `#if DEBUG` dans HuntView — `simctl` ne sait pas
+#                          tourner la Digital Crown)
+#   04 post             — poste 1, avec la FLÈCHE de guidage orientée et la
+#                         DISTANCE (le simulateur est positionné à ~150 m du
+#                         poste, et un `-demoHeading <°>` fournit un cap à
+#                         LocationBridge en Debug pour que la flèche parte
+#                         naturellement vers le poste, sans la mention « Nord
+#                         en haut »)
+#   05 card             — carte de membre avec QR scannable
+#   06 permit           — pastille permis V1 (compat)
+#   07 permitFull       — permis V2 complet (titulaire, validation, assurance)
+#   08 horns            — sonneries résolues de la 1re chasse (Tâche 3)
+#   09 battue2TraqueOn  — mode battue V2, état « Traque 2 · Ligne du vallon » :
+#                         statut en gros, mon poste de la traque 2 + flèche,
+#                         dernier signalement reçu, « 2 en attente », source
+#                         « via l'iPhone », bouton « Signaler ». État `LiveCompactState`
+#                         pré-injecté par le routeur Debug `DemoLiveState`.
+#   10 battue2Paused    — mode battue V2, état « Chasse en pause » (`PAUSED`,
+#                         traque courante = 0 → « Pas de poste pour cette traque »).
+#   11 signalSpecies    — SignalFlowView étape 1 : liste des 3 espèces de la chasse
+#                         (Sanglier / Chevreuil / Cerf — fixture `store`).
+#   12 signalStatus     — SignalFlowView étape 2 : choix du statut (Vu / Prélevé /
+#                         Blessé / Raté) + sélecteur de nombre, préréglé sur Sanglier.
+#   13 signalReminder   — SignalFlowView étape 2 avec rappel de sonnerie
+#                         « Sonnez : <ligne PRÉLEVÉ> » + « Bracelet à poser sur
+#                         l'iPhone » (pré-rempli en Debug via `demoHornReminder`).
 #
 # Pré-requis dans l'env :
 #   - WATCH_APP_PATH : chemin absolu vers MesChassesWatch.app Debug déjà bâti.
@@ -242,6 +256,11 @@ SHOTS=(
   "06 permit"
   "07 permitFull"
   "08 horns"
+  "09 battue2TraqueOn located"
+  "10 battue2Paused"
+  "11 signalSpecies"
+  "12 signalStatus"
+  "13 signalReminder"
 )
 LANGS=(fr en)
 

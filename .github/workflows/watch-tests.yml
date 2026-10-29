@@ -380,7 +380,10 @@ jobs:
             plutil -p "$ENT_PATH"
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
-          HK=$(plutil -extract com.apple.developer.healthkit raw -o - "$ENT_PATH" 2>/dev/null || echo "")
+          # plutil utilise `.` comme séparateur de chemin de clé — les points DANS
+          # le nom de la clé doivent être échappés avec `\.`. Sans ça, la sortie est
+          # vide même si la clé est bel et bien présente (vécu run 40895713403).
+          HK=$(plutil -extract 'com\.apple\.developer\.healthkit' raw -o - "$ENT_PATH" 2>/dev/null || echo "")
           if [ "$HK" != "true" ] && [ "$HK" != "1" ]; then
             echo "::error::com.apple.developer.healthkit absent ou faux dans $ENT_REL (got: ${HK:-<vide>})"
             exit 1

@@ -330,6 +330,46 @@ jobs:
             CODE_SIGN_IDENTITY= \
             build 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" | tail -200
 
+      # Compilation RELEASE des deux cibles montre (simulateur, sans signature).
+      # Le code de capture (`-demo`, `-screen`, `scrollToActionsOnAppear`…) vit
+      # sous `#if DEBUG` : une garde mal placée ne casse que le build Release,
+      # donc invisible aux builds Debug ci-dessus et découverte seulement au
+      # TestFlight. On la détecte ici, avant. SYMROOT séparés (rien à voir avec
+      # les binaires Debug vérifiés plus bas).
+      - name: xcodebuild build Release — MesChassesWatch (app montre)
+        working-directory: app/apps/mobile/ios
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project MesChasses.xcodeproj \
+            -target MesChassesWatch \
+            -configuration Release \
+            -sdk watchsimulator \
+            -skipPackagePluginValidation \
+            SYMROOT="$PWD/build-app-release" \
+            OBJROOT="$PWD/build-app-release/obj" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY= \
+            build 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" | tail -200
+
+      - name: xcodebuild build Release — MesChassesWatchComplications (complications)
+        working-directory: app/apps/mobile/ios
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project MesChasses.xcodeproj \
+            -target MesChassesWatchComplications \
+            -configuration Release \
+            -sdk watchsimulator \
+            -skipPackagePluginValidation \
+            SYMROOT="$PWD/build-complications-release" \
+            OBJROOT="$PWD/build-complications-release/obj" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY= \
+            build 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" | tail -200
+
       # Vérification explicite que les DEUX cibles ont bien produit un binaire
       # non trivial, pas seulement une archive propre.
       #

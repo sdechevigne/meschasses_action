@@ -255,6 +255,64 @@ jobs:
             CODE_SIGN_IDENTITY= \
             build 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" | tail -200
 
+      # Contrôle de l'Info.plist de l'app montre COMPILÉE (pas celui du dépôt) :
+      # la flèche vers le poste lit la position, et watchOS tue l'app sans
+      # `NSLocationWhenInUseUsageDescription`. `WKCompanionAppBundleIdentifier`
+      # (injecté par @bacons/apple-targets via INFOPLIST_KEY_*) doit pointer sur
+      # l'app iPhone `com.meschasses`, sinon l'installation couplée échoue.
+      # On vérifie aussi que le texte d'usage est localisé FR + EN
+      # (InfoPlist.xcstrings compilé en <langue>.lproj/InfoPlist.strings).
+      - name: Contrôle Info.plist de l'app montre (position + app compagnon)
+        working-directory: app/apps/mobile/ios
+        run: |
+          set -uo pipefail
+          APP="build-app/Debug-watchsimulator/MesChassesWatch.app"
+          PLIST="$APP/Info.plist"
+          [ -f "$PLIST" ] || { echo "::error::Info.plist introuvable : $PLIST"; exit 1; }
+
+          {
+            echo "## Info.plist de l'app montre compilée"
+            echo '```'
+            plutil -p "$PLIST"
+            echo '```'
+            echo "### Localisations embarquées"
+            echo '```'
+            find "$APP" -name "*.strings" -o -name "*.lproj" | sort
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+          fail=0
+          KEY=NSLocationWhenInUseUsageDescription
+          if ! plutil -extract "$KEY" raw -o - "$PLIST" >/dev/null 2>&1; then
+            echo "::error::$KEY absente de l'Info.plist de l'app montre"
+            fail=1
+          fi
+          COMPANION=$(plutil -extract WKCompanionAppBundleIdentifier raw -o - "$PLIST" 2>/dev/null || true)
+          if [ "$COMPANION" != "com.meschasses" ]; then
+            echo "::error::WKCompanionAppBundleIdentifier = '${COMPANION}' (attendu : com.meschasses)"
+            fail=1
+          fi
+
+          check_lang() {
+            local lang="$1" expected="$2" f="$APP/$1.lproj/InfoPlist.strings" got
+            if [ ! -f "$f" ]; then
+              echo "::error::$f manquant (texte d'usage non localisé en $lang)"
+              fail=1
+              return
+            fi
+            echo "--- $f"; plutil -p "$f"
+            got=$(plutil -extract "$KEY" raw -o - "$f" 2>/dev/null || true)
+            if [ "$got" != "$expected" ]; then
+              echo "::error::$lang : '${got}' (attendu : '${expected}')"
+              fail=1
+            fi
+          }
+          check_lang fr "Mes Chasses utilise votre position pour vous guider jusqu'à votre poste."
+          check_lang en "Mes Chasses uses your location to guide you to your post."
+
+          [ "$fail" -eq 0 ] || exit 1
+          echo "Contrôle Info.plist montre : OK" | tee -a "$GITHUB_STEP_SUMMARY"
+
       - name: xcodebuild build — MesChassesWatchComplications (complications)
         working-directory: app/apps/mobile/ios
         run: |

@@ -141,7 +141,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY= \
-            build 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" | tail -200
+            build 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" | grep -E "error:|warning:|BUILD FAILED|BUILD SUCC|Compiling" | tail -400
 
       - name: Checkout scripts CI
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0

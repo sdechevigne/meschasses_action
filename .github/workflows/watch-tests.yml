@@ -348,13 +348,13 @@ jobs:
           check_lang_key fr NSHealthUpdateUsageDescription "Mes Chasses enregistre vos battues dans Santé seulement si vous activez le réglage « Enregistrer mes battues dans Santé »."
           check_lang_key en NSHealthUpdateUsageDescription "Mes Chasses only saves your hunts to Health if you turn on the setting \"Save my hunts to Health\"."
 
-          # UIBackgroundModes doit porter workout-processing (sinon HKWorkoutSession ne tient pas
+          # WKBackgroundModes (clé watchOS ; UIBackgroundModes est refusée à l'envoi, 90362) doit porter workout-processing (sinon HKWorkoutSession ne tient pas
           # écran éteint — le mode battue devient inutile).
-          BG=$(plutil -extract UIBackgroundModes json -o - "$PLIST" 2>/dev/null || echo "")
+          BG=$(plutil -extract WKBackgroundModes json -o - "$PLIST" 2>/dev/null || echo "")
           case "$BG" in
             *workout-processing*) ;;
             *)
-              echo "::error::UIBackgroundModes ne contient pas workout-processing (got: ${BG:-<vide>})"
+              echo "::error::WKBackgroundModes ne contient pas workout-processing (got: ${BG:-<vide>})"
               fail=1
               ;;
           esac

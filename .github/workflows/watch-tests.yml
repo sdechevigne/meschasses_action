@@ -364,10 +364,10 @@ jobs:
               fail=1
             fi
           }
-          check_lang_key fr NSHealthShareUsageDescription "La montre peut se mettre en veille."
-          check_lang_key en NSHealthShareUsageDescription "The watch can go to sleep."
-          check_lang_key fr NSHealthUpdateUsageDescription "Mes Chasses enregistre vos battues dans Santé seulement si vous activez le réglage « Enregistrer mes battues dans Santé »."
-          check_lang_key en NSHealthUpdateUsageDescription "Mes Chasses only saves your hunts to Health if you turn on the setting \"Save my hunts to Health\"."
+          check_lang_key fr NSHealthShareUsageDescription "Mes Chasses utilise la séance de battue pour garder la montre active. Rien n'est lu dans Santé."
+          check_lang_key en NSHealthShareUsageDescription "Mes Chasses uses the hunt workout to keep the watch awake. Nothing is read from Health."
+          check_lang_key fr NSHealthUpdateUsageDescription "Mes Chasses garde la montre active en battue. Santé reçoit la séance si vous activez le réglage."
+          check_lang_key en NSHealthUpdateUsageDescription "Mes Chasses keeps the watch awake on a drive. Health gets the workout if you turn on the setting."
 
           # WKBackgroundModes (clé watchOS ; UIBackgroundModes est refusée à l'envoi, 90362) doit porter workout-processing (sinon HKWorkoutSession ne tient pas
           # écran éteint — le mode battue devient inutile).

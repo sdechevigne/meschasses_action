@@ -126,17 +126,26 @@ async function findBundleByExactIdentifier(bundleIdentifier) {
   return (d.data || []).find((b) => b.attributes?.identifier === bundleIdentifier) ?? null;
 }
 
-// ---- 1. Lire côté Apple le profil IOS_APP_STORE actif du bundle principal (pour en déduire le cert).
-async function findActiveAppStoreProfileCert(bundleIdentifier) {
+// ---- 1. Lire côté Apple le profil IOS_APP_STORE du bundle principal (pour en déduire le cert).
+// On préfère le profil ACTIVE. À défaut, on lit le cert d'un profil INVALID : ajouter une
+// capability à l'App ID (ex. HealthKit, vécu le 2026-10-30) invalide tous ses profils sans
+// toucher au certificat. Ce profil du bundle principal appartient à EAS, qui le régénère
+// lui-même au build : on ne fait ici que le LIRE, jamais le supprimer ni le recréer.
+async function findPrimaryAppStoreProfileCert(bundleIdentifier) {
   const bundle = await findBundleByExactIdentifier(bundleIdentifier);
   if (!bundle) throw new Error(`Bundle Apple ${bundleIdentifier} introuvable`);
-  const profiles = (await asc('GET', `/v1/bundleIds/${bundle.id}/profiles?limit=50`)).data || [];
-  const active = profiles.find((p) => p.attributes.profileType === 'IOS_APP_STORE' && p.attributes.profileState === 'ACTIVE');
-  if (!active) throw new Error(`Aucun profil IOS_APP_STORE ACTIVE pour ${bundleIdentifier}`);
-  const detail = await asc('GET', `/v1/profiles/${active.id}?include=certificates`);
+  const profiles = ((await asc('GET', `/v1/bundleIds/${bundle.id}/profiles?limit=50`)).data || [])
+    .filter((p) => p.attributes.profileType === 'IOS_APP_STORE');
+  const source = profiles.find((p) => p.attributes.profileState === 'ACTIVE')
+    ?? profiles.find((p) => p.attributes.profileState === 'INVALID');
+  if (!source) throw new Error(`Aucun profil IOS_APP_STORE (ACTIVE ou INVALID) pour ${bundleIdentifier}`);
+  if (source.attributes.profileState !== 'ACTIVE') {
+    console.log(`[ASC] Profil IOS_APP_STORE de ${bundleIdentifier} ${source.attributes.profileState} (${source.id}) : cert lu quand même, EAS régénérera le profil au build`);
+  }
+  const detail = await asc('GET', `/v1/profiles/${source.id}?include=certificates`);
   const certId = detail.data.relationships.certificates.data[0]?.id;
-  if (!certId) throw new Error(`Profil ${active.id} n'a aucun certificat`);
-  return { certId, primaryBundleAppleId: bundle.id, primaryProfileAppleId: active.id };
+  if (!certId) throw new Error(`Profil ${source.id} n'a aucun certificat`);
+  return { certId, primaryBundleAppleId: bundle.id, primaryProfileAppleId: source.id };
 }
 
 // ---- 2. ASC : s'assure du bundle, du profil IOS_APP_STORE lié au cert donné, retourne le .mobileprovision en base64.
@@ -316,7 +325,7 @@ async function main() {
   console.log(`[Expo] distributionCertificateId (source ${PRIMARY_BUNDLE}) = ${distributionCertificateId}`);
 
   // Côté Apple : le cert utilisé par ce même profil (ID Apple).
-  const { certId: appleCertId } = await findActiveAppStoreProfileCert(PRIMARY_BUNDLE);
+  const { certId: appleCertId } = await findPrimaryAppStoreProfileCert(PRIMARY_BUNDLE);
   console.log(`[ASC] Apple cert id = ${appleCertId}`);
 
   for (const bundle of TARGET_BUNDLES) {

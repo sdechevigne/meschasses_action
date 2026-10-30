@@ -10,12 +10,13 @@ name: Captures montre — App Store
 # xcodebuild Debug `MesChassesWatch` pour `watchsimulator`), puis script
 # `watch-captures-store.sh` qui essaie successivement toutes les tailles
 # disponibles sur le runner (Ultra 49 mm, Series 46 mm, Series 45 mm,
-# Series 41 mm) et prend 16 écrans × 2 langues (fr, en) sur la fixture
+# Series 41 mm) et prend 18 écrans × 2 langues (fr, en) sur la fixture
 # `store` (DemoMode.swift) : 01 home, 02 hunt, 03 huntActions, 04 post,
 # 05 card, 06 permit, 07 permitFull (partie basse), 08 horns, 09 battue2TraqueOn,
 # 10 battue2Paused, 11 signalSpecies, 12 signalStatus, 13 signalReminder,
-# 14 settings, 15 homeBottom, 16 homeStale (liste détaillée : en-tête de
-# `watch-captures-store.sh`).
+# 14 settings, 15 homeBottom, 16 homeStale, puis les deux variantes en mode
+# atténué (poignet baissé, argument Debug `-dimmed`) : 17 battue2TraqueOnDimmed,
+# 18 homeDimmed (liste détaillée : en-tête de `watch-captures-store.sh`).
 #
 # Historique :
 # - Un refactor en matrice (1 job par taille) a été tenté (runs 40768506954

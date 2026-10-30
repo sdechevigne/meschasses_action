@@ -7,7 +7,7 @@
 #
 # Pour chaque taille de montre disponible sur le runner (Ultra 49 mm,
 # Series 46 mm, Series 45 mm, Series 41/42 mm — on prend celles présentes),
-# pour chaque langue (fr, en), prend 16 captures de la fixture `store` :
+# pour chaque langue (fr, en), prend 18 captures de la fixture `store` :
 #   01 home             — liste des chasses à venir (boussole : chasses d'abord)
 #   02 hunt             — détail de la chasse (en-tête : territoire, heure, RDV)
 #   03 huntActions      — même détail, défilé jusqu'à la météo + Présent / Absent
@@ -47,6 +47,12 @@
 #                         l'instantané (« Il y a 12 min », horloge figée en Debug).
 #   16 homeStale        — même bas d'accueil avec un instantané de 3 jours :
 #                         carte d'avertissement « Ouvrez Mes Chasses… ».
+#   17 battue2TraqueOnDimmed — même écran que 09 en mode ATTÉNUÉ (poignet baissé,
+#                         règle 4) : argument Debug `-dimmed` qui force
+#                         `isLuminanceReduced` (le simulateur ne sait pas le
+#                         déclencher). Bouton Signaler et trame masqués, textes à 85 %.
+#   18 homeDimmed       — même écran que 01 en mode atténué (carte pleine en
+#                         `primarySubtle`, textes à 85 %).
 #
 # Pré-requis dans l'env :
 #   - WATCH_APP_PATH : chemin absolu vers MesChassesWatch.app Debug déjà bâti.
@@ -268,8 +274,9 @@ restart_core_simulator() {
 # ---------------------------------------------------------------------------
 # 5) Matrice de captures : 6 écrans × 2 langues sur fixture `store`.
 # ---------------------------------------------------------------------------
-# Format : "numéro écran [extra]" — `extra` peut être `located` (= set
-# location + `-demoHeading`).
+# Format : "numéro écran [extras]" — `extras` : liste séparée par des virgules,
+# `located` (= set location + `-demoHeading`) et/ou `dimmed` (= `-dimmed`, rendu
+# atténué ; le fichier prend alors le suffixe `Dimmed`).
 SHOTS=(
   "01 home"
   "02 hunt"
@@ -287,8 +294,25 @@ SHOTS=(
   "14 settings"
   "15 homeBottom"
   "16 homeStale"
+  "17 battue2TraqueOn located,dimmed"
+  "18 home dimmed"
 )
 LANGS=(fr en)
+
+# Le nom de fichier d'une capture : écran + `Dimmed` quand le rendu est atténué.
+shot_label() {
+  local screen="$1" extras="$2"
+  if has_extra "$extras" dimmed; then
+    echo "${screen}Dimmed"
+  else
+    echo "$screen"
+  fi
+}
+
+# `has_extra "<extras>" <nom>` : vrai si <nom> figure dans la liste séparée par des virgules.
+has_extra() {
+  [[ ",$1," == *",$2,"* ]]
+}
 
 # Coordonnées du 1er poste de la fixture `store` (voir DemoMode.swift) :
 # 47.2180, -1.5530. Position du simulateur ~150 m au nord-nord-est. Cap du
@@ -341,12 +365,12 @@ shoot_device() {
     for shot in "${SHOTS[@]}"; do
       read -r shot_num shot_screen shot_extra <<<"$shot"
       shot_extra="${shot_extra:-}"
-      local out="$OUTDIR/${size_label}-${lang}-${shot_num}-${shot_screen}.png"
+      local out="$OUTDIR/${size_label}-${lang}-${shot_num}-$(shot_label "$shot_screen" "$shot_extra").png"
       echo "  → $out (extra=${shot_extra:-none})"
 
       xcrun simctl terminate "$udid" "$BUNDLE_ID" 2>/dev/null || true
 
-      if [[ "$shot_extra" == "located" ]]; then
+      if has_extra "$shot_extra" located; then
         xcrun simctl location "$udid" set "$SIM_LAT,$SIM_LNG" 2>/dev/null || \
           echo "  ⚠️ simctl location set a échoué (continué quand même)"
       fi
@@ -356,8 +380,11 @@ shoot_device() {
       # alors la mention « Nord en haut » (comportement Debug uniquement).
       local -a launch_args
       launch_args=(-demo store -screen "$shot_screen" -AppleLanguages "($lang)" -AppleLocale "${lang}_FR")
-      if [[ "$shot_extra" == "located" ]]; then
+      if has_extra "$shot_extra" located; then
         launch_args+=(-demoHeading "$DEMO_HEADING")
+      fi
+      if has_extra "$shot_extra" dimmed; then
+        launch_args+=(-dimmed)
       fi
 
       if ! xcrun simctl launch "$udid" "$BUNDLE_ID" "${launch_args[@]}" 2>/tmp/launch.err >/dev/null; then
@@ -369,7 +396,7 @@ shoot_device() {
           boot_device "$udid" || { echo "::error::reboot impossible, abandon $size_label"; return 0; }
           xcrun simctl install "$udid" "$WATCH_APP_PATH" || true
           xcrun simctl privacy "$udid" grant location "$BUNDLE_ID" 2>/dev/null || true
-          [[ "$shot_extra" == "located" ]] && xcrun simctl location "$udid" set "$SIM_LAT,$SIM_LNG" 2>/dev/null || true
+          has_extra "$shot_extra" located && xcrun simctl location "$udid" set "$SIM_LAT,$SIM_LNG" 2>/dev/null || true
           xcrun simctl launch "$udid" "$BUNDLE_ID" "${launch_args[@]}" >/dev/null 2>&1 || {
             echo "::warning::launch échoue encore pour $out après restart"; continue;
           }
@@ -378,7 +405,7 @@ shoot_device() {
           boot_device "$udid" || { echo "::error::reboot impossible, abandon $size_label"; return 0; }
           xcrun simctl install "$udid" "$WATCH_APP_PATH" || true
           xcrun simctl privacy "$udid" grant location "$BUNDLE_ID" 2>/dev/null || true
-          [[ "$shot_extra" == "located" ]] && xcrun simctl location "$udid" set "$SIM_LAT,$SIM_LNG" 2>/dev/null || true
+          has_extra "$shot_extra" located && xcrun simctl location "$udid" set "$SIM_LAT,$SIM_LNG" 2>/dev/null || true
           xcrun simctl launch "$udid" "$BUNDLE_ID" "${launch_args[@]}" >/dev/null 2>&1 || {
             echo "::warning::launch échoue encore pour $out après reboot"; continue;
           }
@@ -388,7 +415,7 @@ shoot_device() {
         fi
       fi
 
-      if [[ "$shot_extra" == "located" ]]; then
+      if has_extra "$shot_extra" located; then
         sleep "$LOCATION_SETTLE_SECONDS"
       else
         sleep "$WAIT_SECONDS"
@@ -437,8 +464,8 @@ too_small=0
 for size_label in "${ATTEMPTED[@]}"; do
   for lang in "${LANGS[@]}"; do
     for shot in "${SHOTS[@]}"; do
-      read -r shot_num shot_screen _ <<<"$shot"
-      f="$OUTDIR/${size_label}-${lang}-${shot_num}-${shot_screen}.png"
+      read -r shot_num shot_screen shot_extra <<<"$shot"
+      f="$OUTDIR/${size_label}-${lang}-${shot_num}-$(shot_label "$shot_screen" "${shot_extra:-}").png"
       if [[ ! -s "$f" ]]; then
         echo "::error::capture manquante ou vide : $f"
         missing=$((missing+1))
@@ -468,9 +495,9 @@ dup_screen=0
 for size_label in "${ATTEMPTED[@]}"; do
   for lang in "${LANGS[@]}"; do
     for shot in "${SHOTS[@]}"; do
-      read -r shot_num shot_screen _ <<<"$shot"
+      read -r shot_num shot_screen shot_extra <<<"$shot"
       [[ "$shot_num" == "01" ]] && continue
-      f="$OUTDIR/${size_label}-${lang}-${shot_num}-${shot_screen}.png"
+      f="$OUTDIR/${size_label}-${lang}-${shot_num}-$(shot_label "$shot_screen" "${shot_extra:-}").png"
       home_png="$OUTDIR/${size_label}-${lang}-01-home.png"
       [[ -s "$f" && -s "$home_png" ]] || continue
       if [[ "$(sha_of "$f")" == "$(sha_of "$home_png")" ]]; then
@@ -486,6 +513,17 @@ for size_label in "${ATTEMPTED[@]}"; do
         dup_screen=$((dup_screen+1))
       fi
     fi
+    # Le rendu atténué doit différer du rendu normal du même écran : sinon `-dimmed` n'a rien changé.
+    for pair in "09-battue2TraqueOn:17-battue2TraqueOnDimmed" "01-home:18-homeDimmed"; do
+      normal="$OUTDIR/${size_label}-${lang}-${pair%%:*}.png"
+      dimmed="$OUTDIR/${size_label}-${lang}-${pair#*:}.png"
+      if [[ -s "$normal" && -s "$dimmed" ]]; then
+        if [[ "$(sha_of "$normal")" == "$(sha_of "$dimmed")" ]]; then
+          echo "::error::$dimmed identique à $normal (le mode atténué n'a pas été appliqué)"
+          dup_screen=$((dup_screen+1))
+        fi
+      fi
+    done
     hunt="$OUTDIR/${size_label}-${lang}-02-hunt.png"
     hunt_actions="$OUTDIR/${size_label}-${lang}-03-huntActions.png"
     if [[ -s "$hunt" && -s "$hunt_actions" ]]; then

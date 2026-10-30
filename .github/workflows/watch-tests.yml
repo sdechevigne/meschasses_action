@@ -65,6 +65,27 @@ jobs:
           echo "Commit monorepo : $(git -C app rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
           swift --version | tee -a "$GITHUB_STEP_SUMMARY"
 
+      # Icônes Lucide de la montre : imagesets, copie JSON et enum Swift doivent
+      # être alignés sur scripts/lucide-watch-icons.json. Seules les dépendances
+      # de la racine (svgo, lucide-static) sont installées : pas tout le monorepo.
+      - name: Setup pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4 (Node 20)
+        with:
+          version: 9
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: app/pnpm-lock.yaml
+
+      - name: Vérifier que les icônes Lucide sont à jour
+        working-directory: app
+        run: |
+          pnpm install --frozen-lockfile --filter meschasses
+          pnpm gen:lucide-watch-icons --check
+
       - name: swift test --package-path apps/mobile/watch-core
         working-directory: app
         run: |

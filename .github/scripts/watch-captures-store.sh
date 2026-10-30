@@ -7,7 +7,7 @@
 #
 # Pour chaque taille de montre disponible sur le runner (Ultra 49 mm,
 # Series 46 mm, Series 45 mm, Series 41/42 mm — on prend celles présentes),
-# pour chaque langue (fr, en), prend 13 captures de la fixture `store` :
+# pour chaque langue (fr, en), prend 16 captures de la fixture `store` :
 #   01 home             — liste des chasses à venir (boussole : chasses d'abord)
 #   02 hunt             — détail de la chasse (en-tête : territoire, heure, RDV)
 #   03 huntActions      — même détail, défilé jusqu'à la météo + Présent / Absent
@@ -22,7 +22,10 @@
 #                         en haut »)
 #   05 card             — carte de membre avec QR scannable
 #   06 permit           — pastille permis V1 (compat)
-#   07 permitFull       — permis V2 complet (titulaire, validation, assurance)
+#   07 permitFull       — permis V2, PARTIE BASSE (validation, assurance échue,
+#                         ligne « documents officiels ») : permis étranger +
+#                         assurance échue, défilé d'emblée sous `#if DEBUG`
+#                         (sans cela 06 et 07 étaient identiques ; contrôlé en fin de script)
 #   08 horns            — sonneries résolues de la 1re chasse (Tâche 3)
 #   09 battue2TraqueOn  — mode battue V2, état « Traque 2 · Ligne du vallon » :
 #                         statut en gros, mon poste de la traque 2 + flèche,
@@ -38,6 +41,12 @@
 #   13 signalReminder   — SignalFlowView étape 2 avec rappel de sonnerie
 #                         « Sonnez : <ligne PRÉLEVÉ> » + « Bracelet à poser sur
 #                         l'iPhone » (pré-rempli en Debug via `demoHornReminder`).
+#   14 settings         — Réglages (Gibier signalé par les autres, Enregistrer
+#                         mes battues dans Santé), atteignable depuis l'accueil.
+#   15 homeBottom       — bas de l'accueil : ligne « Réglages » + fraîcheur de
+#                         l'instantané (« Il y a 12 min », horloge figée en Debug).
+#   16 homeStale        — même bas d'accueil avec un instantané de 3 jours :
+#                         carte d'avertissement « Ouvrez Mes Chasses… ».
 #
 # Pré-requis dans l'env :
 #   - WATCH_APP_PATH : chemin absolu vers MesChassesWatch.app Debug déjà bâti.
@@ -275,6 +284,9 @@ SHOTS=(
   "11 signalSpecies"
   "12 signalStatus"
   "13 signalReminder"
+  "14 settings"
+  "15 homeBottom"
+  "16 homeStale"
 )
 LANGS=(fr en)
 
@@ -466,6 +478,14 @@ for size_label in "${ATTEMPTED[@]}"; do
         dup_screen=$((dup_screen+1))
       fi
     done
+    permit="$OUTDIR/${size_label}-${lang}-06-permit.png"
+    permit_full="$OUTDIR/${size_label}-${lang}-07-permitFull.png"
+    if [[ -s "$permit" && -s "$permit_full" ]]; then
+      if [[ "$(sha_of "$permit")" == "$(sha_of "$permit_full")" ]]; then
+        echo "::error::$permit_full identique à $permit (la partie basse du permis n'est pas montrée)"
+        dup_screen=$((dup_screen+1))
+      fi
+    fi
     hunt="$OUTDIR/${size_label}-${lang}-02-hunt.png"
     hunt_actions="$OUTDIR/${size_label}-${lang}-03-huntActions.png"
     if [[ -s "$hunt" && -s "$hunt_actions" ]]; then

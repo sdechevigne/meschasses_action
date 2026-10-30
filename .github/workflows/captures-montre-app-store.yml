@@ -10,7 +10,7 @@ name: Captures montre — App Store
 # xcodebuild Debug `MesChassesWatch` pour `watchsimulator`), puis script
 # `watch-captures-store.sh` qui essaie successivement toutes les tailles
 # disponibles sur le runner (Ultra 49 mm, Series 46 mm, Series 45 mm,
-# Series 41 mm) et prend 13 écrans × 2 langues (fr, en) sur la fixture
+# Series 41 mm) et prend 16 écrans × 2 langues (fr, en) sur la fixture
 # `store` (DemoMode.swift) : 8 écrans V1 + 5 écrans V2 (battue Traque 2 /
 # battue Pause / signalement 3 étapes).
 #

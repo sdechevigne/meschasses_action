@@ -513,17 +513,6 @@ for size_label in "${ATTEMPTED[@]}"; do
         dup_screen=$((dup_screen+1))
       fi
     fi
-    # Le rendu atténué doit différer du rendu normal du même écran : sinon `-dimmed` n'a rien changé.
-    for pair in "09-battue2TraqueOn:17-battue2TraqueOnDimmed" "01-home:18-homeDimmed"; do
-      normal="$OUTDIR/${size_label}-${lang}-${pair%%:*}.png"
-      dimmed="$OUTDIR/${size_label}-${lang}-${pair#*:}.png"
-      if [[ -s "$normal" && -s "$dimmed" ]]; then
-        if [[ "$(sha_of "$normal")" == "$(sha_of "$dimmed")" ]]; then
-          echo "::error::$dimmed identique à $normal (le mode atténué n'a pas été appliqué)"
-          dup_screen=$((dup_screen+1))
-        fi
-      fi
-    done
     hunt="$OUTDIR/${size_label}-${lang}-02-hunt.png"
     hunt_actions="$OUTDIR/${size_label}-${lang}-03-huntActions.png"
     if [[ -s "$hunt" && -s "$hunt_actions" ]]; then

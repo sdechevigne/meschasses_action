@@ -196,7 +196,21 @@ boot_device() {
   for attempt in 1 2 3; do
     xcrun simctl shutdown "$udid" 2>/dev/null || true
     sleep 1
-    xcrun simctl boot "$udid" 2>/dev/null || true
+    # On capture stderr du boot : le message « cannot determine the runtime
+    # bundle » (ou « runtime … no longer available ») signale un
+    # CoreSimulatorService qui a PERDU le lien au runtime watchOS. Un simple
+    # reboot ne le répare pas — seul un restart du daemon le flushe. Sans ça,
+    # le 1er device qui tombe dans cet état entraîne tous les suivants (46mm →
+    # 45mm → 41mm), d'où 78 captures manquantes alors que le 49mm a réussi.
+    local booterr="/tmp/boot.$$.$attempt.err"
+    xcrun simctl boot "$udid" 2>"$booterr" || true
+    if grep -qi "cannot determine the runtime\|runtime bundle\|no longer available\|runtime .* not" "$booterr" 2>/dev/null; then
+      echo "  ⚠️ runtime bundle perdu au boot — restart CoreSimulatorService"
+      sed 's/^/      /' "$booterr" || true
+      restart_core_simulator
+      xcrun simctl boot "$udid" 2>/dev/null || true
+    fi
+    rm -f "$booterr"
 
     local statfile="/tmp/bootstatus.$$.$attempt"
     xcrun simctl bootstatus "$udid" -b >"$statfile" 2>&1 &

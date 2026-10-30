@@ -132,6 +132,16 @@ jobs:
       # dans un volume Docker). Les 4 variables WEAROS_* sont consommées par
       # app/build.gradle.kts (signingConfig release). Le keystore est à l'intérieur
       # du dépôt → chemin relatif au module app (release.keystore à la racine wearos).
+      #
+      # Télémétrie / crash reporting (BET-wearos-telemetry) :
+      #  - WEAROS_SENTRY_DSN : même projet Sentry que l'app téléphone (EXPO_PUBLIC_SENTRY_DSN
+      #    côté mobile) ; `MesChassesSentry.init` est no-op si vide, donc le DSN ne finit
+      #    jamais dans un APK debug ou un build local. Un tag `platform=wearos` est posé
+      #    côté client pour séparer les événements des deux apps dans Sentry.
+      #  - SENTRY_AUTH_TOKEN / SENTRY_ORG / SENTRY_PROJECT : lus par le plugin Gradle
+      #    Sentry pour TÉLÉVERSER le fichier de correspondance R8 (`mapping.txt`). Si l'un
+      #    des trois manque, le plugin désactive l'upload tout seul (`includeProguardMapping`
+      #    + `autoUploadProguardMapping` sont posés sur `sentryAuthToken.isNotEmpty()`).
       - name: Build bundleRelease signé
         env:
           CI: "1"
@@ -139,6 +149,10 @@ jobs:
           WEAROS_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           WEAROS_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           WEAROS_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          WEAROS_SENTRY_DSN: ${{ secrets.EXPO_PUBLIC_SENTRY_DSN }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
         working-directory: app
         run: |
           set -e

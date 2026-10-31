@@ -7,6 +7,7 @@ name: Wear OS Play
 # son run_number : aucun croisement possible).
 # Clé de signature : SECRETS ANDROID_KEYSTORE_* (mêmes que l'app téléphone, Play
 # App Signing partage le même package com.meschasses).
+# Firebase : SECRET ANDROID_GOOGLE_SERVICES_JSON (même que l'app téléphone, même projet).
 
 on:
   workflow_dispatch:
@@ -117,6 +118,23 @@ jobs:
           echo "$ANDROID_KEYSTORE_FILE" | base64 -d > app/apps/wearos/release.keystore
           test -s app/apps/wearos/release.keystore
 
+      # Configuration Firebase (push FCM de la montre) : `app/google-services.json` du module Wear OS est
+      # gitignoré (jamais commité). On le matérialise depuis le secret base64 ANDROID_GOOGLE_SERVICES_JSON,
+      # le MÊME que l'app téléphone (expo-android-play.yml) : même projet Firebase, même applicationId
+      # com.meschasses. Contrôles avant tout build long : secret présent, JSON valide, client Android
+      # com.meschasses présent. Le build lui-même refuse un fichier absent (-Pmeschasses.requireGoogleServices).
+      - name: Write Firebase google-services.json
+        env:
+          ANDROID_GOOGLE_SERVICES_JSON: ${{ secrets.ANDROID_GOOGLE_SERVICES_JSON }}
+        run: |
+          set -e
+          [ -n "$ANDROID_GOOGLE_SERVICES_JSON" ] || { echo "::error::ANDROID_GOOGLE_SERVICES_JSON manquant"; exit 1; }
+          echo "$ANDROID_GOOGLE_SERVICES_JSON" | base64 --decode > app/apps/wearos/app/google-services.json
+          jq empty app/apps/wearos/app/google-services.json || { echo "::error::google-services.json invalide (JSON)"; exit 1; }
+          jq -e '.client[]? | select(.client_info.android_client_info.package_name == "com.meschasses")' \
+            app/apps/wearos/app/google-services.json > /dev/null \
+            || { echo "::error::google-services.json sans client Android com.meschasses"; exit 1; }
+
       # Injection du versionCode dans build.gradle.kts : les lignes "versionCode = 1"
       # (defaultConfig) et "versionName" sont réécrites par sed. Le versionName suit
       # pour l'affichage, pas pour l'ordre.
@@ -164,7 +182,7 @@ jobs:
         working-directory: app
         run: |
           set -e
-          apps/wearos/scripts/wear.sh build :app:bundleRelease
+          apps/wearos/scripts/wear.sh build :app:bundleRelease -Pmeschasses.requireGoogleServices=true
           test -f apps/wearos/app/build/outputs/bundle/release/app-release.aab
 
       # bundletool épinglé (version + empreinte) : utilisé par verifier-minimums.mjs
@@ -203,8 +221,8 @@ jobs:
           RELEASE_NAME: ${{ env.RELEASE_NAME }}
         run: node ci/.github/scripts/publish-google-play-wearos-track.mjs
 
-      # Nettoyage : .aab, keystore, cache Gradle local (le vrai cache vit dans un
+      # Nettoyage : .aab, keystore, google-services.json, cache Gradle local (le vrai cache vit dans un
       # volume Docker, inaccessible après la fin du conteneur).
       - name: Wipe build outputs and secrets
         if: always()
-        run: rm -f app/apps/wearos/release.keystore app/apps/wearos/app/build/outputs/bundle/release/app-release.aab
+        run: rm -f app/apps/wearos/release.keystore app/apps/wearos/app/google-services.json app/apps/wearos/app/build/outputs/bundle/release/app-release.aab

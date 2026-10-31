@@ -24,6 +24,14 @@ on:
           - "wear:beta"
           - "wear:production"
         default: "wear:internal"
+      upload_to_play:
+        description: "Envoyer le bundle sur Google Play (décocher pour seulement construire)"
+        type: boolean
+        default: true
+      keep_aab:
+        description: "Garder le .aab signé en artefact 1 jour (dépôt manuel dans la Play Console)"
+        type: boolean
+        default: false
 
 # Repo PUBLIC : le GITHUB_TOKEN n'est utilisé par aucun step du job. Un seul
 # `permissions: {}` au niveau workflow suffit — pas de redondance au niveau job.
@@ -171,7 +179,20 @@ jobs:
           MIN_ANDROID: "30"
         run: node ci/.github/scripts/verifier-minimums.mjs android app/apps/wearos/app/build/outputs/bundle/release/app-release.aab "$RUNNER_TEMP/bundletool.jar"
 
+      # Dépôt manuel (ex. première release d'un format, quand la console doit poser
+      # une déclaration que l'API ne sait pas remplir). Le .aab ne contient aucun
+      # secret (clé anon et DSN Sentry sont publics par nature) ; rétention 1 jour.
+      - name: Conserver le .aab (dépôt manuel)
+        if: ${{ inputs.keep_aab }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: wearos-${{ env.RELEASE_NAME }}
+          path: app/apps/wearos/app/build/outputs/bundle/release/app-release.aab
+          retention-days: 1
+          if-no-files-found: error
+
       - name: Envoi sur la piste Wear OS Google Play
+        if: ${{ inputs.upload_to_play }}
         env:
           GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
           AAB_PATH: app/apps/wearos/app/build/outputs/bundle/release/app-release.aab

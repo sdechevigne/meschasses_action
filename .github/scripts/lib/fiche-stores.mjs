@@ -93,7 +93,19 @@ export async function appliquerFicheAppStore(api, { appId, versionId, fiches }) 
   if (!info) throw new Error('Aucune appInfo éditable : la version doit être en préparation.');
 
   const infoLocs = await localisations(api, `/appInfos/${info.id}/appInfoLocalizations`);
+  const versionLocs = await localisations(api, `/appStoreVersions/${versionId}/appStoreVersionLocalizations`);
+  // Les locales créées recopient les URL de fr-FR : vérifiées AVANT toute écriture.
   const privacyPolicyUrl = infoLocs.find((l) => l.locale === 'fr-FR')?.attributes.privacyPolicyUrl;
+  const fr = versionLocs.find((l) => l.locale === 'fr-FR')?.attributes || {};
+  const aCreer = (locs) => planAppStore(locs, fiches).some((p) => p.action === 'creer');
+  const manquantes = [
+    aCreer(infoLocs) && !privacyPolicyUrl && 'privacyPolicyUrl',
+    aCreer(versionLocs) && !fr.supportUrl && 'supportUrl',
+  ].filter(Boolean);
+  if (manquantes.length) {
+    throw new Error(`Fiche App Store fr-FR sans ${manquantes.join(', ')} : impossible de la recopier sur les locales créées.`);
+  }
+
   for (const { locale, action, id } of planAppStore(infoLocs, fiches)) {
     const attributes = champsAppStore(fiches[locale]).info;
     if (action === 'modifier') {
@@ -116,8 +128,6 @@ export async function appliquerFicheAppStore(api, { appId, versionId, fiches }) 
     console.log(`Fiche App Store ${locale} : nom et sous-titre (${action}).`);
   }
 
-  const versionLocs = await localisations(api, `/appStoreVersions/${versionId}/appStoreVersionLocalizations`);
-  const fr = versionLocs.find((l) => l.locale === 'fr-FR')?.attributes || {};
   for (const { locale, action, id } of planAppStore(versionLocs, fiches)) {
     const attributes = champsAppStore(fiches[locale]).version;
     if (action === 'modifier') {

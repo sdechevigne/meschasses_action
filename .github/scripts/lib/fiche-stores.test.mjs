@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  appliquerFicheAppStore,
   chargerFiches,
   champsAppStore,
   champsPlay,
@@ -78,4 +79,48 @@ test('ecart liste les champs différents et les locales absentes du store', () =
     { locale: 'fr-FR', champ: 'description', actuel: 'X', attendu: 'D' },
     { locale: 'en-GB', champ: 'nom', actuel: undefined, attendu: 'B' },
   ]);
+});
+
+// Faux client App Store Connect : réponses par chemin, journal des écritures.
+function fauxAsc({ privacyPolicyUrl, supportUrl }) {
+  const ecritures = [];
+  const api = async (chemin, opts = {}) => {
+    if (opts.method) {
+      ecritures.push(`${opts.method} ${chemin}`);
+      return {};
+    }
+    if (chemin.startsWith('/apps/app/appInfos')) return { data: [{ id: 'info', attributes: { state: 'PREPARE_FOR_SUBMISSION' } }] };
+    if (chemin.startsWith('/appInfos/info/appInfoLocalizations'))
+      return { data: [{ id: 'i-fr', attributes: { locale: 'fr-FR', privacyPolicyUrl } }] };
+    if (chemin.startsWith('/appStoreVersions/v/appStoreVersionLocalizations'))
+      return { data: [{ id: 'v-fr', attributes: { locale: 'fr-FR', supportUrl, marketingUrl: 'https://m' } }] };
+    throw new Error(`chemin inattendu ${chemin}`);
+  };
+  return { api, ecritures };
+}
+
+const fichesFrEn = () => ({ 'fr-FR': fiche('fr'), 'en-GB': fiche('en'), 'en-US': fiche('en') });
+
+test('appliquerFicheAppStore crée les locales EN et modifie fr-FR', async () => {
+  const { api, ecritures } = fauxAsc({ privacyPolicyUrl: 'https://p', supportUrl: 'https://s' });
+  await appliquerFicheAppStore(api, { appId: 'app', versionId: 'v', fiches: fichesFrEn() });
+  assert.deepEqual(ecritures, [
+    'PATCH /appInfoLocalizations/i-fr',
+    'POST /appInfoLocalizations',
+    'POST /appInfoLocalizations',
+    'PATCH /appStoreVersionLocalizations/v-fr',
+    'POST /appStoreVersionLocalizations',
+    'POST /appStoreVersionLocalizations',
+  ]);
+});
+
+test('appliquerFicheAppStore refuse avant toute écriture si une URL fr-FR à recopier manque', async () => {
+  for (const urls of [{ supportUrl: 'https://s' }, { privacyPolicyUrl: 'https://p' }]) {
+    const { api, ecritures } = fauxAsc(urls);
+    await assert.rejects(
+      appliquerFicheAppStore(api, { appId: 'app', versionId: 'v', fiches: fichesFrEn() }),
+      /fr-FR.*(privacyPolicyUrl|supportUrl)/
+    );
+    assert.deepEqual(ecritures, []);
+  }
 });

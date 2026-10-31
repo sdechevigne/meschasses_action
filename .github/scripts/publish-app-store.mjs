@@ -27,8 +27,11 @@
 import { readFileSync } from 'node:fs';
 import { createAscClient, sleep } from './lib/asc.mjs';
 import { notesForLocale, readNouveautes } from './lib/nouveautes.mjs';
+import { FICHE_DIR, appliquerFicheAppStore, chargerFiches, importerModuleFiche, verifierPublication } from './lib/fiche-stores.mjs';
 
 const CHECK_ONLY = process.env.CHECK_ONLY === '1';
+// Publie aussi la fiche (apps/mobile/store/fiche/) : input `fiche` de mise-en-production.yml.
+const PUBLIER_FICHE = process.env.PUBLIER_FICHE === '1';
 const BUNDLE_ID = process.env.ASC_BUNDLE_ID;
 const BUILD_NUMBER = process.env.BUILD_NUMBER;
 const APP_JSON = process.env.APP_JSON || 'app/apps/mobile/app.json';
@@ -77,6 +80,12 @@ async function main() {
   } catch (e) {
     if (!CHECK_ONLY) throw e;
     notesError = e;
+  }
+  // Fiche : contrôlée AVANT toute écriture (et dès le contrôle d'avant build).
+  const fiches = PUBLIER_FICHE ? chargerFiches(await importerModuleFiche(), FICHE_DIR) : null;
+  if (fiches) {
+    verifierPublication(fiches, notes, version);
+    console.log(`Fiche à publier : ${Object.keys(fiches).join(', ')}.`);
   }
 
   // --- App ------------------------------------------------------------------
@@ -189,6 +198,9 @@ async function main() {
     });
     console.log(`Version ${target.attributes.versionString} → ${version}, publication automatique après validation.`);
   }
+
+  // --- 2 bis. Fiche (crée les locales absentes, ex. en-GB / en-US) -----------
+  if (fiches) await appliquerFicheAppStore(api, { appId, versionId: target.id, fiches });
 
   // --- 3. Nouveautés ----------------------------------------------------------
   const locs = await localesOf(target);

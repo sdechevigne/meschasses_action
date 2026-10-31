@@ -27,9 +27,12 @@
 
 import { readFileSync } from 'node:fs';
 import { notesForLocale, readNouveautes } from './lib/nouveautes.mjs';
+import { FICHE_DIR, appliquerFichePlay, chargerFiches, importerModuleFiche, verifierPublication } from './lib/fiche-stores.mjs';
 import { accessToken, makeCall, createEdit, deleteEdit } from './lib/play.mjs';
 
 const CHECK_ONLY = process.env.CHECK_ONLY === '1';
+// Publie aussi la fiche (apps/mobile/store/fiche/) : input `fiche` de mise-en-production.yml.
+const PUBLIER_FICHE = process.env.PUBLIER_FICHE === '1';
 // Déploiement par paliers : fraction d'utilisateurs servie (0 < f < 1), vide = 100 %.
 const USER_FRACTION = process.env.PLAY_USER_FRACTION ? Number(process.env.PLAY_USER_FRACTION) : null;
 if (USER_FRACTION !== null && !(USER_FRACTION > 0 && USER_FRACTION < 1)) {
@@ -65,6 +68,12 @@ async function main() {
     if (!CHECK_ONLY) throw e;
     notesError = e;
   }
+  // Fiche : contrôlée AVANT toute écriture (et dès le contrôle d'avant build).
+  const fiches = PUBLIER_FICHE ? chargerFiches(await importerModuleFiche(), FICHE_DIR) : null;
+  if (fiches) {
+    verifierPublication(fiches, notes, version);
+    console.log(`Fiche à publier : ${Object.keys(fiches).join(', ')}.`);
+  }
 
   // Un jeton dure 1 h : largement assez pour un edit (upload compris).
   const token = await accessToken(process.env.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON);
@@ -74,6 +83,10 @@ async function main() {
   const edit = `${API}/edits/${editId}`;
   let committed = false;
   try {
+    // Fiche d'abord : les langues créées (ex. en-GB / en-US) reçoivent ensuite
+    // leurs notes de version. Écrite dans le même edit, donc publiée avec lui.
+    if (fiches && !CHECK_ONLY) await appliquerFichePlay(call, edit, fiches);
+
     // Langues de la fiche Play : chacune reçoit ses notes de version.
     const languages = ((await call(`${edit}/listings`)).listings || []).map((l) => l.language);
     if (!languages.length) throw new Error('Aucune langue de fiche Google Play lue.');

@@ -16,6 +16,10 @@ on:
         type: choice
         options: [test, production]
         default: test
+      fiche:
+        description: "Publier aussi la fiche store (apps/mobile/store/fiche/ du monorepo) — production seulement"
+        type: boolean
+        default: false
       watch:
         description: "Inclure les cibles watchOS (app montre + complications) — JAMAIS en production tant que la montre n'est pas validée."
         type: boolean
@@ -144,6 +148,13 @@ jobs:
           persist-credentials: false
           path: ci
 
+      # La fiche store ne se publie qu'avec une mise en production.
+      - name: Garde fiche store
+        if: inputs.fiche == true && inputs.destination != 'production'
+        run: |
+          echo "::error::fiche=true est réservé à destination=production."
+          exit 1
+
       # PRODUCTION : contrôles AVANT toute minute de build (branche par défaut ou
       # commit précis déjà intégré à celle-ci,
       # nouveautés présentes et ≤ 500 caractères, version > version en ligne,
@@ -159,6 +170,7 @@ jobs:
           ASC_PRIVATE_KEY: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
           ASC_BUNDLE_ID: ${{ secrets.IOS_BUNDLE_ID || 'com.meschasses' }}
           CHECK_ONLY: "1"
+          PUBLIER_FICHE: ${{ inputs.fiche == true && '1' || '0' }}
         run: |
           node ci/.github/scripts/verifier-mise-en-prod.mjs
           node ci/.github/scripts/publish-app-store.mjs
@@ -533,6 +545,7 @@ jobs:
           ASC_BUNDLE_ID: ${{ secrets.IOS_BUNDLE_ID || 'com.meschasses' }}
           BUILD_NUMBER: ${{ steps.bn.outputs.build_number }}
           POLL_TIMEOUT_SEC: "2700"
+          PUBLIER_FICHE: ${{ inputs.fiche == true && '1' || '0' }}
         run: node ci/.github/scripts/publish-app-store.mjs
 
       # Rien n'est conservé : ni artifact (aucun upload-artifact dans ce workflow),

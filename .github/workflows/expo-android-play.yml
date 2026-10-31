@@ -16,6 +16,10 @@ on:
         type: choice
         options: [test, production]
         default: test
+      fiche:
+        description: "Publier aussi la fiche store (apps/mobile/store/fiche/ du monorepo) — production seulement"
+        type: boolean
+        default: false
   push:
     tags:
       - "play-v*"
@@ -61,6 +65,13 @@ jobs:
           persist-credentials: false
           path: ci
 
+      # La fiche store ne se publie qu'avec une mise en production.
+      - name: Garde fiche store
+        if: inputs.fiche == true && inputs.destination != 'production'
+        run: |
+          echo "::error::fiche=true est réservé à destination=production."
+          exit 1
+
       # PRODUCTION : contrôles AVANT toute minute de build (branche par défaut ou
       # commit précis déjà intégré à celle-ci,
       # nouveautés présentes et ≤ 500 caractères, version > version en ligne,
@@ -73,6 +84,7 @@ jobs:
           MONOREPO_TOKEN: ${{ secrets.CI_PAT_TOKEN }}
           GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
           CHECK_ONLY: "1"
+          PUBLIER_FICHE: ${{ inputs.fiche == true && '1' || '0' }}
         run: |
           node ci/.github/scripts/verifier-mise-en-prod.mjs
           node ci/.github/scripts/publish-google-play.mjs
@@ -301,6 +313,7 @@ jobs:
           # Déploiement PAR PALIERS (décision 2026-10-22, sortie 5.0.0 en pleine saison) :
           # 10 % des utilisateurs d'abord ; montée via le workflow rollout-android.yml.
           PLAY_USER_FRACTION: "0.1"
+          PUBLIER_FICHE: ${{ inputs.fiche == true && '1' || '0' }}
         run: node ci/.github/scripts/publish-google-play.mjs
 
       # Aucun artifact n'est conservé : l'.aab ne va QUE vers Play (internal).

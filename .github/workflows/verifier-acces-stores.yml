@@ -58,11 +58,25 @@ jobs:
         continue-on-error: true
         run: node ci/.github/scripts/verifier-mise-en-prod.mjs
 
+      # Fiches store : écart entre apps/mobile/store/fiche/ et les fiches en
+      # ligne, et textes actuels des stores (publics). Rien n'est écrit.
+      - name: Fiches stores
+        id: fiche
+        continue-on-error: true
+        env:
+          ASC_ISSUER_ID: ${{ secrets.APPSTORE_ISSUER_ID }}
+          ASC_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
+          ASC_PRIVATE_KEY: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
+          ASC_BUNDLE_ID: ${{ secrets.IOS_BUNDLE_ID || 'com.meschasses' }}
+          GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
+        run: node ci/.github/scripts/verifier-fiche-stores.mjs
+
       - name: Bilan
         env:
           IOS: ${{ steps.ios.outcome }}
           ANDROID: ${{ steps.android.outcome }}
           VERSION: ${{ steps.version.outcome }}
+          FICHE: ${{ steps.fiche.outcome }}
         run: |
-          echo "App Store : $IOS · Google Play : $ANDROID · Version/nouveautés : $VERSION"
-          [ "$IOS" = success ] && [ "$ANDROID" = success ] && [ "$VERSION" = success ]
+          echo "App Store : $IOS · Google Play : $ANDROID · Version/nouveautés : $VERSION · Fiches : $FICHE"
+          [ "$IOS" = success ] && [ "$ANDROID" = success ] && [ "$VERSION" = success ] && [ "$FICHE" = success ]

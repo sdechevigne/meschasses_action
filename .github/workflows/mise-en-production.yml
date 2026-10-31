@@ -22,6 +22,10 @@ on:
         description: "SHA complet (40 car.) d'un commit déjà sur la branche par défaut — vide = dernier commit"
         required: false
         default: ""
+      fiche:
+        description: "Publier aussi la fiche store (apps/mobile/store/fiche/) — ex. ouverture de l'anglais"
+        type: boolean
+        default: false
 
 permissions: {}
 
@@ -42,14 +46,15 @@ jobs:
       # Passé par env (jamais interpolé dans le script) ; validé par le contrôle
       # « mise en production » de chaque workflow (SHA complet intégré à la branche).
       COMMIT: ${{ inputs.commit }}
+      FICHE: ${{ inputs.fiche }}
     steps:
       - name: Lancer iOS et Android, attendre la fin
         run: |
           set -euo pipefail
           since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-          gh workflow run expo-ios-testflight.yml --ref "$REF" -f destination=production -f monorepo_ref="$COMMIT"
-          gh workflow run expo-android-play.yml --ref "$REF" -f destination=production -f monorepo_ref="$COMMIT"
+          gh workflow run expo-ios-testflight.yml --ref "$REF" -f destination=production -f monorepo_ref="$COMMIT" -f fiche="$FICHE"
+          gh workflow run expo-android-play.yml --ref "$REF" -f destination=production -f monorepo_ref="$COMMIT" -f fiche="$FICHE"
 
           # Retrouve le run créé par ce dispatch (premier run workflow_dispatch
           # créé après `since`).

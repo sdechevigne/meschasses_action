@@ -21,7 +21,7 @@ on:
         type: boolean
         default: false
       watch:
-        description: "Inclure les cibles watchOS (app montre + complications) — JAMAIS en production tant que la montre n'est pas validée."
+        description: "Inclure les cibles watchOS (app montre + complications). Montre validée sur appareil le 2026-10-31 (build 816) : autorisée en production."
         type: boolean
         default: false
   push:
@@ -104,16 +104,6 @@ jobs:
       contents: read
 
     steps:
-      # Garde-fou : les cibles watchOS ne sont PAS encore validées pour la prod.
-      # Un dispatch watch=true + destination=production serait un envoi à Apple
-      # d'un binaire qui n'a jamais été recetté — bloqué ici, avant tout coût de
-      # build. À retirer quand la montre sera prête pour la vraie publication.
-      - name: Garde — watch=true interdit en production
-        if: inputs.watch == true && inputs.destination == 'production'
-        run: |
-          echo "::error::watch=true est interdit avec destination=production tant que la montre n'est pas validée. Utiliser destination=test."
-          exit 1
-
       # Checkout du monorepo (pnpm/Turborepo) via un PAT dédié.
       # L'app Expo vit dans app/apps/mobile ; la racine workspace est app/.
       - name: Checkout monorepo

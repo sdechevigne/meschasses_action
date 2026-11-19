@@ -210,7 +210,9 @@ jobs:
       # `eas build --local` échoue alors en « could not find compatible versions ». Rafraîchir
       # l'index de trunk (CDN : seuls les fichiers d'index changés sont téléchargés) avant le build.
       - name: Index CocoaPods à jour
-        run: pod repo update trunk
+        run: |
+          # Cache vide (premier build sur une clé) : pas encore de trunk, pod install l'ajoutera à jour.
+          if pod repo list | grep -q '^trunk'; then pod repo update trunk; fi
 
       - name: Setup EAS CLI
         uses: expo/expo-github-action@c7b66a9c327a43a8fa7c0158e7f30d6040d2481e # v8.2.1

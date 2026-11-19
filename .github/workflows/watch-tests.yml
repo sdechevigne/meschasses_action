@@ -249,9 +249,16 @@ jobs:
         run: |
           set -o pipefail
           for i in 1 2 3; do
-            if pod install; then
+            if pod install 2>&1 | tee /tmp/pod-install.log; then
               echo "pod install OK à la tentative $i" >> "$GITHUB_STEP_SUMMARY"
               exit 0
+            fi
+            # Index CocoaPods en cache plus ancien qu'un pod tout juste publié (vécu le 2026-11-19 :
+            # PostHog 3.98.0, exigé par @posthog/react-native-plugin) : on rafraîchit l'index de
+            # trunk (CDN, quelques fichiers) au lieu de rejouer --repo-update sur tous les dépôts.
+            if grep -q "could not find compatible versions" /tmp/pod-install.log; then
+              echo "Index CocoaPods périmé : pod repo update trunk"
+              pod repo update trunk
             fi
             echo "pod install a échoué (tentative $i/3), nouvelle tentative dans 30s..."
             sleep 30

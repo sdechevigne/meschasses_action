@@ -205,6 +205,13 @@ jobs:
           key: pods-${{ runner.os }}-${{ hashFiles('app/pnpm-lock.yaml') }}
           restore-keys: pods-${{ runner.os }}-
 
+      # Le cache restauré par `restore-keys` peut porter un index CocoaPods plus ancien qu'un pod
+      # que le lockfile vient d'exiger (vécu le 2026-11-19 : PostHog 3.98.0) : `pod install` de
+      # `eas build --local` échoue alors en « could not find compatible versions ». Rafraîchir
+      # l'index de trunk (CDN : seuls les fichiers d'index changés sont téléchargés) avant le build.
+      - name: Index CocoaPods à jour
+        run: pod repo update trunk
+
       - name: Setup EAS CLI
         uses: expo/expo-github-action@c7b66a9c327a43a8fa7c0158e7f30d6040d2481e # v8.2.1
         with:

@@ -253,18 +253,18 @@ jobs:
 
       # Clé App Store Connect API passée à eas-cli en NON-INTERACTIF : lui permet
       # de créer ses profils de distribution tout seul (nouveaux bundles comme la
-      # montre watchOS). SANS cette étape, eas lève
+      # montre watchOS ou l'extension de partage iOS). SANS cette étape, eas lève
       # `InsufficientAuthenticationNonInteractiveError` sur toute nouvelle cible
       # (SetUpProvisioningProfile.js / CreateProvisioningProfile.js lus dans
       # eas-cli 26.0.0). La clé .p8 vit uniquement dans $HOME/private_keys, dossier
       # effacé par le step final « Wipe build outputs », et sa valeur est masquée
       # ligne à ligne avant écriture.
-      # Conditionné à `inputs.watch == true` : les builds iOS « normaux » (prod
-      # comprise) continuent de fonctionner exactement comme avant ce chantier,
-      # sans qu'eas voie EXPO_ASC_*. L'upload à TestFlight plus bas gère sa
-      # propre clé p8 indépendamment (step « Upload to TestFlight »).
+      # Devenu INCONDITIONNEL le 2026-11-22 (chantier partage entrant) : l'extension
+      # de partage iOS (plugin expo-share-intent, bundle com.meschasses.share-extension)
+      # est incluse dans TOUS les builds — pas conditionnée à un input watch. Il faut
+      # donc toujours pouvoir amorcer ses credentials non-interactifs. L'upload à
+      # TestFlight plus bas gère toujours sa propre clé p8 indépendamment.
       - name: Prepare ASC API key for EAS (non-interactive signing)
-        if: inputs.watch == true
         id: asc_key
         env:
           ASC_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
@@ -291,16 +291,37 @@ jobs:
             || { echo "::error::APPSTORE_API_PRIVATE_KEY invalide (ni PEM ni base64 de PEM)"; exit 1; }
           echo "key_file=$KEY_FILE" >> "$GITHUB_OUTPUT"
 
-      # Avant tout build qui introduit un NOUVEAU bundle iOS (ici les cibles
-      # watchOS), on amorce ses credentials côté Apple + côté Expo. Sans cela,
-      # eas-cli non-interactif échoue sur `MissingCredentialsNonInteractiveError`
+      # Avant tout build qui introduit un NOUVEAU bundle iOS, on amorce ses
+      # credentials côté Apple + côté Expo. Sans cela, eas-cli non-interactif
+      # échoue sur `MissingCredentialsNonInteractiveError`
       # (SetUpDistributionCertificate.runNonInteractiveAsync) : il ne tente
       # jamais de réutiliser un cert existant pour un bundle nouvellement
-      # rencontré. Le script crée côté ASC les bundleIds + un IOS_APP_STORE
-      # provisioning profile lié au MÊME certificat de distribution que celui
-      # qu'utilise déjà `com.meschasses`, télécharge le `.mobileprovision`, puis
-      # l'enregistre côté Expo via les mutations GraphQL `createApple*` /
-      # `createIosAppBuildCredentials`. Idempotent : réexécution = no-op.
+      # rencontré. Le script crée côté ASC les bundleIds + les capacités (APP_GROUPS
+      # pour l'extension de partage) + un IOS_APP_STORE provisioning profile lié
+      # au MÊME certificat de distribution que celui qu'utilise déjà `com.meschasses`,
+      # télécharge le `.mobileprovision`, puis l'enregistre côté Expo via les
+      # mutations GraphQL `createApple*` / `createIosAppBuildCredentials`.
+      # Idempotent : réexécution = no-op. Logique partagée dans
+      # ci/.github/scripts/lib/prime-ios-credentials.mjs.
+
+      # Extension de partage iOS (expo-share-intent) — incluse dans TOUS les builds
+      # (le plugin ajoute la cible MesChassesPartage au prebuild sans input à activer).
+      # Doit tourner avant eas build sinon MissingCredentialsNonInteractiveError sur
+      # com.meschasses.share-extension. APP_GROUPS obligatoire : l'extension échange
+      # les fichiers partagés avec l'app via group.com.meschasses (entitlement défini
+      # par le plugin, cf. apps/mobile/app.json iosAppGroupIdentifier).
+      - name: Amorce credentials share-extension (ASC + Expo GraphQL)
+        env:
+          APPSTORE_API_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
+          APPSTORE_ISSUER_ID: ${{ secrets.APPSTORE_ISSUER_ID }}
+          APPSTORE_API_PRIVATE_KEY_PATH: ${{ steps.asc_key.outputs.key_file }}
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          EXPO_APP_ID: "723bb511-987b-4d04-983b-40dfa4929bba"
+          EXPO_APPLE_TEAM_ID: "B77M2F5M8R"
+          PRIMARY_BUNDLE: "com.meschasses"
+        run: node ci/.github/scripts/prime-share-extension-credentials.mjs
+
+      # Cibles watchOS — seulement quand le build les embarque (watch=true).
       - name: Amorce credentials watch (ASC + Expo GraphQL)
         if: inputs.watch == true
         env:
@@ -329,20 +350,21 @@ jobs:
           MESCHASSES_WATCH: ${{ inputs.watch == true && '1' || '0' }}
           # Autorise eas-cli à parler à App Store Connect sans prompt (clé API
           # d'équipe, Issuer ID requis). Lu par resolveCredentials.js d'eas-cli.
-          # Posé UNIQUEMENT quand watch=true : les builds iOS « normaux » (prod
-          # comprise) continuent de n'utiliser que les credentials gérés par EAS
-          # côté serveur, exactement comme avant ce chantier.
-          EXPO_ASC_API_KEY_PATH: ${{ inputs.watch == true && steps.asc_key.outputs.key_file || '' }}
-          EXPO_ASC_KEY_ID: ${{ inputs.watch == true && secrets.APPSTORE_API_KEY_ID || '' }}
-          EXPO_ASC_ISSUER_ID: ${{ inputs.watch == true && secrets.APPSTORE_ISSUER_ID || '' }}
-          # Dérive le team Apple sans prompt (eas-cli demande sinon). Même
-          # conditionnalité que les EXPO_ASC_* : seulement quand on construit les
-          # cibles watchOS.
-          EXPO_APPLE_TEAM_ID: ${{ inputs.watch == true && 'B77M2F5M8R' || '' }}
+          # Devenu INCONDITIONNEL le 2026-11-22 (chantier partage entrant) :
+          # l'extension de partage iOS (bundle com.meschasses.share-extension) est
+          # incluse dans TOUS les builds — eas doit toujours pouvoir résoudre ses
+          # credentials non-interactifs, même quand watch=false. Les autres bundles
+          # déjà connus d'Expo (com.meschasses, com.meschasses.widget) continuent
+          # d'utiliser leur IosAppBuildCredentials pré-existant tel quel.
+          EXPO_ASC_API_KEY_PATH: ${{ steps.asc_key.outputs.key_file }}
+          EXPO_ASC_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
+          EXPO_ASC_ISSUER_ID: ${{ secrets.APPSTORE_ISSUER_ID }}
+          # Dérive le team Apple sans prompt (eas-cli demande sinon).
+          EXPO_APPLE_TEAM_ID: "B77M2F5M8R"
           # Compte Apple Developer Program de « Mes Chasses » = organisation.
           # Si l'équipe était INDIVIDUAL, le job échouerait tôt avec un message
           # clair — à corriger ici (3 valeurs possibles : IN_HOUSE / COMPANY_OR_ORGANIZATION / INDIVIDUAL).
-          EXPO_APPLE_TEAM_TYPE: ${{ inputs.watch == true && 'COMPANY_OR_ORGANIZATION' || '' }}
+          EXPO_APPLE_TEAM_TYPE: "COMPANY_OR_ORGANIZATION"
           EXPO_PUBLIC_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
           EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_KEY }}
           # Analytics PostHog — clé inlinée dans le bundle (projet commun web+mobile,

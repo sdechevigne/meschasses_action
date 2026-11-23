@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # .github/scripts/watch-captures.sh — Tâche 11
 #
-# Prend 30 captures de l'app montre (3 tailles × 2 langues × 5 fixtures DemoMode)
+# Prend des captures de l'app montre (4 tailles × 2 langues × N fixtures DemoMode)
 # sur un runner macOS avec Xcode installé, et pose les PNG dans `$OUTDIR`
 # (par défaut `watch-captures/`).
 #
@@ -12,8 +12,12 @@
 #
 # Le script découvre le runtime watchOS disponible via `xcrun simctl list`,
 # et pour chaque taille utilise le device type exact présent sur le runner
-# (41 mm, 45 mm, Ultra 49 mm). Les devices « captures-* » sont créés à la
+# (40 mm, 41 mm, 45 mm, Ultra 49 mm). Les devices « captures-* » sont créés à la
 # volée s'ils n'existent pas déjà, puis supprimés en fin de run.
+#
+# La permission de localisation est accordée AVANT le premier launch de l'app
+# (via `xcrun simctl privacy grant location`) pour éviter l'alerte système
+# « Allow to use your location? » qui masquait 4 écrans sur 10.
 #
 # Mode démo : l'app lit `-demo <fixture>` dans ses launch arguments
 # (apps/mobile/targets/watch/Views/DemoMode.swift) et NE DÉMARRE PAS
@@ -57,7 +61,9 @@ fi
 echo "Runtime watchOS retenu : $WATCH_RUNTIME"
 
 # ---------------------------------------------------------------------------
-# 2) Choix des 3 device types (41 mm / 45 mm / Ultra 49 mm).
+# 2) Choix des 4 device types (40 mm / 41 mm / 45 mm / Ultra 49 mm).
+#    Le 40 mm est la plus petite montre (162 pt de large) et sert à vérifier
+#    la règle anti-troncature.
 # ---------------------------------------------------------------------------
 ALL_WATCH_TYPES=$(xcrun simctl list devicetypes -j | \
   node -e '(() => {
@@ -78,26 +84,43 @@ pick_device_type() {
   '
 }
 
+# 40 mm = Series 4/5/6/SE (1re gen) 40mm — le plus petit écran (162 pt)
+TYPE_40=$(pick_device_type '40mm')
 TYPE_41=$(pick_device_type '41mm')
 TYPE_45=$(pick_device_type '45mm')
 TYPE_49=$(pick_device_type 'Ultra.*49mm|49mm.*Ultra|49mm')
 
-[[ -z "$TYPE_41" ]] && TYPE_41=$(pick_device_type 'Series.*7|Series.*8|Series.*9|Series.*10|Series 10|SE.*44mm|40mm')
+[[ -z "$TYPE_40" ]] && TYPE_40=$(pick_device_type 'SE.*40mm|Series.*4.*40|Series.*5.*40|Series.*6.*40')
+[[ -z "$TYPE_41" ]] && TYPE_41=$(pick_device_type 'Series.*7|Series.*8|Series.*9|Series.*10|Series 10|SE.*44mm')
 [[ -z "$TYPE_45" ]] && TYPE_45=$(pick_device_type 'Series.*10|Series 10|Series.*9|Series.*8|Series.*7|44mm')
 [[ -z "$TYPE_49" ]] && TYPE_49=$(pick_device_type 'Ultra')
 
+echo "Device type 40 mm = ${TYPE_40:-(aucun)}"
 echo "Device type 41 mm = ${TYPE_41:-(aucun)}"
 echo "Device type 45 mm = ${TYPE_45:-(aucun)}"
 echo "Device type 49 mm Ultra = ${TYPE_49:-(aucun)}"
 
-if [[ -z "$TYPE_41" || -z "$TYPE_45" || -z "$TYPE_49" ]]; then
-  echo "::error::Au moins un device type watchOS attendu est absent du runner."
+# Au moins 3 tailles obligatoires (40 mm peut manquer sur certains runners)
+SIZES_FOUND=0
+[[ -n "$TYPE_40" ]] && SIZES_FOUND=$((SIZES_FOUND+1))
+[[ -n "$TYPE_41" ]] && SIZES_FOUND=$((SIZES_FOUND+1))
+[[ -n "$TYPE_45" ]] && SIZES_FOUND=$((SIZES_FOUND+1))
+[[ -n "$TYPE_49" ]] && SIZES_FOUND=$((SIZES_FOUND+1))
+
+if [[ "$SIZES_FOUND" -lt 3 ]]; then
+  echo "::error::Moins de 3 device types watchOS disponibles (trouvés: $SIZES_FOUND)."
   exit 1
 fi
 
+# Avertissement si le 40 mm manque (vérification anti-troncature moins fiable)
+if [[ -z "$TYPE_40" ]]; then
+  echo "::warning::Device type 40 mm non disponible — vérification anti-troncature sur 41 mm seulement"
+fi
+
 # ---------------------------------------------------------------------------
-# 3) Création des 3 devices (si pas déjà présents).
+# 3) Création des 4 devices (si pas déjà présents).
 # ---------------------------------------------------------------------------
+NAME_40="captures-40mm"
 NAME_41="captures-41mm"
 NAME_45="captures-45mm"
 NAME_49="captures-49mm-ultra"
@@ -129,16 +152,19 @@ create_or_reuse() {
   xcrun simctl create "$1" "$2" "$3"
 }
 
+UDID_40=""
+[[ -n "$TYPE_40" ]] && UDID_40=$(create_or_reuse "$NAME_40" "$TYPE_40" "$WATCH_RUNTIME")
 UDID_41=$(create_or_reuse "$NAME_41" "$TYPE_41" "$WATCH_RUNTIME")
 UDID_45=$(create_or_reuse "$NAME_45" "$TYPE_45" "$WATCH_RUNTIME")
 UDID_49=$(create_or_reuse "$NAME_49" "$TYPE_49" "$WATCH_RUNTIME")
 
+echo "UDID 40mm = ${UDID_40:-(non créé)}"
 echo "UDID 41mm = $UDID_41"
 echo "UDID 45mm = $UDID_45"
 echo "UDID 49mm = $UDID_49"
 
 cleanup() {
-  for u in "$UDID_41" "$UDID_45" "$UDID_49"; do
+  for u in "$UDID_40" "$UDID_41" "$UDID_45" "$UDID_49"; do
     [[ -z "$u" ]] && continue
     xcrun simctl shutdown "$u" 2>/dev/null || true
     xcrun simctl delete "$u" 2>/dev/null || true
@@ -202,19 +228,28 @@ boot_device() {
 }
 
 # ---------------------------------------------------------------------------
-# 4) Round 2 : 60 captures. L'app lit `-screen <home|hunt|post|card|permit>`
-#    (DemoMode.swift round 2) et monte directement l'écran voulu.
-#    Matrice par taille × langue :
+# 4) Captures : 4 tailles × 2 langues × N écrans. L'app lit `-screen <nom>`
+#    (DemoMode.swift) et monte directement l'écran voulu.
+#
+#    Scénarios de base (10 par taille × langue) :
 #       - home   : les 5 fixtures (empty, oneHunt, noCoordinates, card, signedOut)
 #       - hunt   : oneHunt
 #       - post   : oneHunt, noCoordinates
 #       - card   : card
 #       - permit : oneHunt
-#    = 10 captures / (taille × langue). × 3 × 2 = 60.
+#
+#    Scénarios « textes longs » (fixture `longTexts`, 7 par taille × langue) :
+#       - home, hunt, post : noms de territoire/traque/poste longs
+#       - battue2TraqueOn : bandeau « DRIVE 12 IN PROGRESS », dernier signalement long
+#       - signalPlanLine : choix de ligne de plan avec libellés longs
+#       - card : carte de membre avec numéro long
+#       - horns : sonneries avec lignes longues (si espèces multiples)
+#
 #    Nom : <taille>-<langue>-<démo>-<écran>.png
 # ---------------------------------------------------------------------------
 # Liste explicite (démo, écran) — simple et lisible.
 PAIRS=(
+  # Scénarios de base
   "empty home"
   "oneHunt home"
   "noCoordinates home"
@@ -225,6 +260,14 @@ PAIRS=(
   "noCoordinates post"
   "card card"
   "oneHunt permit"
+  # Scénarios « textes longs » pour vérifier la règle anti-troncature
+  "longTexts home"
+  "longTexts hunt"
+  "longTexts post"
+  "longTexts battue2TraqueOn"
+  "longTexts signalPlanLine"
+  "longTexts card"
+  "longTexts horns"
 )
 LANGS=(fr en)
 
@@ -278,6 +321,14 @@ shoot_device() {
     fi
   fi
 
+  # Accorder la permission de localisation AVANT le premier launch.
+  # Évite l'alerte système « Allow "MesChassesWatch" to use your location? »
+  # qui masquait 4 écrans sur 10 (card-card, noCoordinates-post, oneHunt-permit, oneHunt-post).
+  echo "  Accord de la permission de localisation..."
+  xcrun simctl privacy "$udid" grant location "$BUNDLE_ID" 2>/dev/null || {
+    echo "::warning::privacy grant location a échoué pour $size_label"
+  }
+
   for lang in "${LANGS[@]}"; do
     for pair in "${PAIRS[@]}"; do
       local demo="${pair% *}"
@@ -320,19 +371,20 @@ shoot_device() {
   done
 }
 
+[[ -n "$UDID_40" ]] && shoot_device "$UDID_40" "40mm"
 shoot_device "$UDID_41" "41mm"
 shoot_device "$UDID_45" "45mm"
 shoot_device "$UDID_49" "49mm-ultra"
 
 # ---------------------------------------------------------------------------
-# 5) Vérification finale : 60 captures, puis contrôle d'empreintes.
+# 5) Vérification finale : N captures (selon les tailles disponibles), puis contrôle d'empreintes.
 #
 # Une capture peut être « présente et de taille normale » tout en montrant
 # la mauvaise chose : crash juste après launch (cadran noir), fallback
 # silencieux de `DemoRootView` quand l'élément manque (round 1 : retombait
 # sur l'accueil), traduction manquante (EN == FR). On attrape ces trois cas
 # par comparaison de SHA256 :
-#   • écran `hunt`/`post`/`card`/`permit` identique à `home` même démo /
+#   • écran `hunt`/`post`/`card`/`permit`/etc. identique à `home` même démo /
 #     taille / langue → la capture détail est en fait l'accueil.
 #   • `fr` identique à `en` même écran / démo / taille → l'EN n'est pas
 #     réellement affiché (ou l'écran n'a aucun texte localisé — toléré
@@ -340,11 +392,18 @@ shoot_device "$UDID_49" "49mm-ultra"
 #     exceptions ci-dessous).
 #   • taille < 1 Ko → ::error::.
 # ---------------------------------------------------------------------------
+
+# Construire la liste des tailles effectivement capturées
+SIZES_CAPTURED=()
+[[ -n "$UDID_40" ]] && SIZES_CAPTURED+=("40mm")
+SIZES_CAPTURED+=("41mm" "45mm" "49mm-ultra")
+
+EXPECTED_COUNT=$(( ${#SIZES_CAPTURED[@]} * ${#LANGS[@]} * ${#PAIRS[@]} ))
 echo
-echo "## Vérification des 60 captures"
+echo "## Vérification des $EXPECTED_COUNT captures (${#SIZES_CAPTURED[@]} tailles × ${#LANGS[@]} langues × ${#PAIRS[@]} écrans)"
 missing=0
 too_small=0
-for size in 41mm 45mm 49mm-ultra; do
+for size in "${SIZES_CAPTURED[@]}"; do
   for lang in "${LANGS[@]}"; do
     for pair in "${PAIRS[@]}"; do
       demo="${pair% *}"
@@ -376,13 +435,16 @@ echo "## Contrôle d'empreintes (SHA256)"
 dup_home=0
 dup_i18n=0
 
-for size in 41mm 45mm 49mm-ultra; do
+for size in "${SIZES_CAPTURED[@]}"; do
   for lang in "${LANGS[@]}"; do
     # (a) écran détail != home de la même démo / taille / langue.
+    # Exclure les écrans qui n'ont pas de fixture home correspondante.
     for pair in "${PAIRS[@]}"; do
       demo="${pair% *}"
       screen="${pair#* }"
       [[ "$screen" == "home" ]] && continue
+      # Les écrans de la fixture longTexts qui n'ont pas de home correspondant
+      # (battue2TraqueOn, signalPlanLine, horns) ne peuvent pas être comparés à home
       f="$OUTDIR/${size}-${lang}-${demo}-${screen}.png"
       href="$OUTDIR/${size}-${lang}-${demo}-home.png"
       [[ -s "$f" && -s "$href" ]] || continue
@@ -399,10 +461,12 @@ for size in 41mm 45mm 49mm-ultra; do
   # localisé significatif — un fr == en y est acceptable. On exempte
   # donc l'écran `card` du contrôle i18n. Pour `permit`, le libellé vient
   # du snapshot (déjà traduit par le monorepo), donc on exempte aussi.
+  # Les écrans de signalement (signalPlanLine) sont exemptés aussi car les
+  # libellés viennent du snapshot.
   for pair in "${PAIRS[@]}"; do
     demo="${pair% *}"
     screen="${pair#* }"
-    [[ "$screen" == "card" || "$screen" == "permit" ]] && continue
+    [[ "$screen" == "card" || "$screen" == "permit" || "$screen" == "signalPlanLine" ]] && continue
     f_fr="$OUTDIR/${size}-fr-${demo}-${screen}.png"
     f_en="$OUTDIR/${size}-en-${demo}-${screen}.png"
     [[ -s "$f_fr" && -s "$f_en" ]] || continue
@@ -421,4 +485,4 @@ if [[ "$missing" -gt 0 || "$too_small" -gt 0 || "$dup_home" -gt 0 || "$dup_i18n"
   exit 1
 fi
 
-echo "## 60 captures OK dans $OUTDIR"
+echo "## $EXPECTED_COUNT captures OK dans $OUTDIR"

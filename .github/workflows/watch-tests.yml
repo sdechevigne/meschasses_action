@@ -288,6 +288,9 @@ jobs:
         working-directory: app/apps/mobile/ios
         run: |
           set -o pipefail
+          # `set +e` : le shell du step tourne avec `-e`, qui couperait avant qu'on puisse lire
+          # `PIPESTATUS` et rejouer les diagnostics du compilateur (voir plus bas).
+          set +e
           xcodebuild \
             -project MesChasses.xcodeproj \
             -target MesChassesWatch \
@@ -299,7 +302,16 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY= \
-            build 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" | tail -200
+            build 2>&1 | tee "$RUNNER_TEMP/xcodebuild-debug-app.log" | tee -a "$GITHUB_STEP_SUMMARY" | tail -200
+          # `tail -200` garde la fin du log, qui ne contient QUE le récapitulatif des commandes :
+          # les diagnostics du compilateur sont plus haut et disparaissaient. On les rejoue ici.
+          status=${PIPESTATUS[0]}
+          if [[ "$status" -ne 0 ]]; then
+            echo "::group::Diagnostics du compilateur (debug-app)"
+            grep -E "error:|error: " "$RUNNER_TEMP/xcodebuild-debug-app.log" | head -60 || true
+            echo "::endgroup::"
+          fi
+          exit "$status"
 
       # Contrôle de l'Info.plist de l'app montre COMPILÉE (pas celui du dépôt) :
       # la flèche vers le poste lit la position, et watchOS tue l'app sans
@@ -440,6 +452,9 @@ jobs:
         working-directory: app/apps/mobile/ios
         run: |
           set -o pipefail
+          # `set +e` : le shell du step tourne avec `-e`, qui couperait avant qu'on puisse lire
+          # `PIPESTATUS` et rejouer les diagnostics du compilateur (voir plus bas).
+          set +e
           xcodebuild \
             -project MesChasses.xcodeproj \
             -target MesChassesWatchComplications \
@@ -451,7 +466,16 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY= \
-            build 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" | tail -200
+            build 2>&1 | tee "$RUNNER_TEMP/xcodebuild-debug-complications.log" | tee -a "$GITHUB_STEP_SUMMARY" | tail -200
+          # `tail -200` garde la fin du log, qui ne contient QUE le récapitulatif des commandes :
+          # les diagnostics du compilateur sont plus haut et disparaissaient. On les rejoue ici.
+          status=${PIPESTATUS[0]}
+          if [[ "$status" -ne 0 ]]; then
+            echo "::group::Diagnostics du compilateur (debug-complications)"
+            grep -E "error:|error: " "$RUNNER_TEMP/xcodebuild-debug-complications.log" | head -60 || true
+            echo "::endgroup::"
+          fi
+          exit "$status"
 
       # Compilation RELEASE des deux cibles montre (simulateur, sans signature).
       # Le code de capture (`-demo`, `-screen`, `scrollToActionsOnAppear`…) vit
@@ -463,6 +487,9 @@ jobs:
         working-directory: app/apps/mobile/ios
         run: |
           set -o pipefail
+          # `set +e` : le shell du step tourne avec `-e`, qui couperait avant qu'on puisse lire
+          # `PIPESTATUS` et rejouer les diagnostics du compilateur (voir plus bas).
+          set +e
           xcodebuild \
             -project MesChasses.xcodeproj \
             -target MesChassesWatch \
@@ -474,12 +501,24 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY= \
-            build 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" | tail -200
+            build 2>&1 | tee "$RUNNER_TEMP/xcodebuild-release-app.log" | tee -a "$GITHUB_STEP_SUMMARY" | tail -200
+          # `tail -200` garde la fin du log, qui ne contient QUE le récapitulatif des commandes :
+          # les diagnostics du compilateur sont plus haut et disparaissaient. On les rejoue ici.
+          status=${PIPESTATUS[0]}
+          if [[ "$status" -ne 0 ]]; then
+            echo "::group::Diagnostics du compilateur (release-app)"
+            grep -E "error:|error: " "$RUNNER_TEMP/xcodebuild-release-app.log" | head -60 || true
+            echo "::endgroup::"
+          fi
+          exit "$status"
 
       - name: xcodebuild build Release — MesChassesWatchComplications (complications)
         working-directory: app/apps/mobile/ios
         run: |
           set -o pipefail
+          # `set +e` : le shell du step tourne avec `-e`, qui couperait avant qu'on puisse lire
+          # `PIPESTATUS` et rejouer les diagnostics du compilateur (voir plus bas).
+          set +e
           xcodebuild \
             -project MesChasses.xcodeproj \
             -target MesChassesWatchComplications \
@@ -491,7 +530,16 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY= \
-            build 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" | tail -200
+            build 2>&1 | tee "$RUNNER_TEMP/xcodebuild-release-complications.log" | tee -a "$GITHUB_STEP_SUMMARY" | tail -200
+          # `tail -200` garde la fin du log, qui ne contient QUE le récapitulatif des commandes :
+          # les diagnostics du compilateur sont plus haut et disparaissaient. On les rejoue ici.
+          status=${PIPESTATUS[0]}
+          if [[ "$status" -ne 0 ]]; then
+            echo "::group::Diagnostics du compilateur (release-complications)"
+            grep -E "error:|error: " "$RUNNER_TEMP/xcodebuild-release-complications.log" | head -60 || true
+            echo "::endgroup::"
+          fi
+          exit "$status"
 
       # Vérification explicite que les DEUX cibles ont bien produit un binaire
       # non trivial, pas seulement une archive propre.

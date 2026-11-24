@@ -174,7 +174,9 @@ jobs:
 
       - name: Captures simulateur watchOS pour App Store
         working-directory: app/apps/mobile/ios
-        timeout-minutes: 50
+        # 65 min : la taille 40 mm (la plus petite, celle qui prouve la règle anti-troncature)
+        # a été ajoutée aux tailles capturées le 2026-11-24.
+        timeout-minutes: 65
         env:
           WATCH_APP_PATH: ${{ github.workspace }}/app/apps/mobile/ios/build-app/Debug-watchsimulator/MesChassesWatch.app
           OUTDIR: ${{ github.workspace }}/watch-captures-app-store

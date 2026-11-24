@@ -132,6 +132,9 @@ TYPE_46=$(pick_device_type '46mm')
 TYPE_45=$(pick_device_type '45mm')
 TYPE_41=$(pick_device_type '41mm')
 TYPE_42=$(pick_device_type '42mm')
+# 40 mm = la PLUS PETITE montre (162 pt) : c'est elle qui prouve la règle anti-troncature
+# (« aucun mot coupé en deux »), donc elle doit être dans les captures vitrine aussi.
+TYPE_40=$(pick_device_type '40mm')
 
 [[ -z "$TYPE_49" ]] && TYPE_49=$(pick_device_type 'Ultra')
 [[ -z "$TYPE_41" ]] && TYPE_41="$TYPE_42"
@@ -140,6 +143,7 @@ echo "Device type Ultra 49 mm = ${TYPE_49:-(aucun)}"
 echo "Device type Series 46 mm = ${TYPE_46:-(aucun)}"
 echo "Device type Series 45 mm = ${TYPE_45:-(aucun)}"
 echo "Device type Series 41/42 mm = ${TYPE_41:-(aucun)}"
+echo "Device type Series 40 mm = ${TYPE_40:-(aucun)}"
 
 # ---------------------------------------------------------------------------
 # 3) Création des devices TOUT DE SUITE. Pas de restart du daemon ensuite :
@@ -184,6 +188,7 @@ create_device_if_available "49mm-ultra" "$TYPE_49"
 create_device_if_available "46mm"       "$TYPE_46"
 create_device_if_available "45mm"       "$TYPE_45"
 create_device_if_available "41mm"       "$TYPE_41"
+create_device_if_available "40mm"       "$TYPE_40"
 
 if [[ ${#DEVICES[@]} -eq 0 ]]; then
   echo "::error::Aucune taille de montre disponible sur le runner."

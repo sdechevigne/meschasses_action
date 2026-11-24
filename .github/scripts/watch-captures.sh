@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # .github/scripts/watch-captures.sh — Tâche 11
 #
-# Prend des captures de l'app montre (4 tailles × 2 langues × N fixtures DemoMode)
+# Prend des captures de l'app montre et de ses complications
+# (4 tailles × 2 langues × N fixtures DemoMode)
 # sur un runner macOS avec Xcode installé, et pose les PNG dans `$OUTDIR`
 # (par défaut `watch-captures/`).
 #
@@ -245,6 +246,14 @@ boot_device() {
 #       - card : carte de membre avec numéro long
 #       - horns : sonneries avec lignes longues (si espèces multiples)
 #
+#    Complications du cadran (5 par taille × langue, galerie Debug de l'app —
+#    `simctl` ne sait pas poser une complication sur un cadran) :
+#       - complicationCircular / complicationRectangular / complicationInline :
+#         les 3 familles de « Prochaine chasse », nom de territoire long
+#       - complicationBracelets : « Bracelets » (rectangle, sa seule famille),
+#         noms d'espèces longs + indicateur « +N »
+#       - empty complicationBracelets : état « Aucun bracelet »
+#
 #    Nom : <taille>-<langue>-<démo>-<écran>.png
 # ---------------------------------------------------------------------------
 # Liste explicite (démo, écran) — simple et lisible.
@@ -268,6 +277,15 @@ PAIRS=(
   "longTexts signalPlanLine"
   "longTexts card"
   "longTexts horns"
+  # Complications du cadran (galerie Debug de l'app : un simulateur ne sait pas
+  # poser une complication sur un cadran). Toutes les familles proposées :
+  # Prochaine chasse = cercle + rectangle + ligne, Bracelets = rectangle seul.
+  "longTexts complicationCircular"
+  "longTexts complicationRectangular"
+  "longTexts complicationInline"
+  "longTexts complicationBracelets"
+  # État « aucun bracelet » / « aucune chasse » de la complication.
+  "empty complicationBracelets"
 )
 LANGS=(fr en)
 

@@ -575,16 +575,17 @@ jobs:
           persist-credentials: false
           path: ci
 
-      # Jusqu'à 136 captures (4 tailles × 2 langues × 17 écrans — matrice `-demo` + `-screen`
-      # dans DemoMode.swift). Lance le simulateur, installe le .app Debug déjà
+      # Jusqu'à 176 captures (4 tailles × 2 langues × 22 écrans — matrice `-demo` + `-screen`
+      # dans DemoMode.swift, dont les 5 écrans de complication rendus par la galerie Debug).
+      # Lance le simulateur, installe le .app Debug déjà
       # bâti, puis itère. Simulateurs créés à la volée et supprimés en fin de
-      # step. `timeout-minutes: 45` : borne dure si le CoreSimulatorService
+      # step. `timeout-minutes: 60` : borne dure si le CoreSimulatorService
       # part en vrille (vécu run 40716075617 : hang indéfini du bootstatus).
       # Note : la taille 40 mm peut manquer sur certains runners ; le script
       # continue avec 3 tailles minimum.
       - name: Captures simulateur watchOS
         working-directory: app/apps/mobile/ios
-        timeout-minutes: 45
+        timeout-minutes: 60
         env:
           WATCH_APP_PATH: ${{ github.workspace }}/app/apps/mobile/ios/build-app/Debug-watchsimulator/MesChassesWatch.app
           OUTDIR: ${{ github.workspace }}/watch-captures

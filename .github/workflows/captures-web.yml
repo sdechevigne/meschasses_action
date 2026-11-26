@@ -1,0 +1,79 @@
+name: Captures app web
+
+# Captures de l'app web (app.meschasses.com) pour les visuels du site vitrine (cible `site-web`
+# du moteur packages/store-visuals). Compte de démonstration, données fictives.
+# Le parcours vit dans le monorepo : apps/web/e2e-captures/parcours.ts
+# Rendu dans le conteneur Playwright FIGÉ, le même que le montage des visuels.
+# Sortie : artifact `captures-web-<langue>` → web/NN-nom.png
+
+on:
+  workflow_dispatch:
+    inputs:
+      monorepo_ref:
+        description: "SHA complet ou branche du monorepo (vide = branche par défaut)"
+        required: false
+        default: ""
+      langue:
+        description: "Langue de l'app"
+        required: false
+        type: choice
+        options: [fr, en]
+        default: fr
+      base_url:
+        description: "Adresse de l'app web"
+        required: false
+        default: "https://app.meschasses.com"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: captures-web-${{ inputs.langue }}
+  cancel-in-progress: true
+
+jobs:
+  captures:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: production
+    container:
+      image: mcr.microsoft.com/playwright:v1.56.0-noble
+      options: --ipc=host
+    steps:
+      - name: Checkout monorepo
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          repository: ${{ secrets.MONOREPO_REPO }}
+          token: ${{ secrets.CI_PAT_TOKEN }}
+          path: app
+          ref: ${{ inputs.monorepo_ref }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 9
+
+      - name: Install dependencies
+        run: cd app && pnpm install --frozen-lockfile
+
+      - name: Parcours
+        working-directory: app
+        env:
+          BASE_URL: ${{ inputs.base_url }}
+          DEMO_EMAIL: demo@meschasses.com
+          DEMO_PASSWORD: ${{ secrets.DEMO_PASSWORD }}
+          LANGUE: ${{ inputs.langue }}
+          SORTIE: ${{ github.workspace }}/captures
+        run: |
+          echo "::add-mask::$DEMO_PASSWORD"
+          ./node_modules/.bin/tsx apps/web/e2e-captures/parcours.ts
+
+      - name: Artifact captures
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: captures-web-${{ inputs.langue }}
+          path: captures
+          retention-days: 7
+          if-no-files-found: error

@@ -1,0 +1,303 @@
+name: Captures Android (visuels Google Play)
+
+# Captures brutes de l'app Android pour les visuels Google Play : Pixel 7 (téléphone) et Pixel Tablet,
+# en portrait, avec le compte de démonstration (données fictives). Même parcours que l'iOS.
+# Le script vit dans le monorepo :
+#   apps/mobile/store/creative-assets/captures/ (run-android.sh, parcours.yaml, ecran.yaml, bornes.mjs)
+# Sortie : artifact `captures-android-<langue>` rangé comme l'attend le moteur de visuels :
+#   android-tel/NN-nom.png · android-tablette/NN-nom.png (+ NN-nom.bornes.json pour les encarts).
+
+on:
+  workflow_dispatch:
+    inputs:
+      monorepo_ref:
+        description: "SHA complet ou branche du monorepo (vide = branche par défaut)"
+        required: false
+        default: ""
+      langue:
+        description: "Langue du système et de l'app"
+        required: false
+        type: choice
+        options: [fr, en]
+        default: fr
+      appareils:
+        description: "Appareils séparés par « , » (android-tel, android-tablette). Vide = les deux"
+        required: false
+        default: ""
+      app_run_id:
+        description: "Réutiliser l'APK d'un run précédent (id du run, < 24 h) au lieu de recompiler"
+        required: false
+        default: ""
+
+# Repo PUBLIC : le GITHUB_TOKEN ne sert qu'aux artifacts.
+permissions:
+  contents: read
+
+concurrency:
+  group: captures-android-${{ inputs.langue }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrice: ${{ steps.calcul.outputs.matrice }}
+    steps:
+      - name: Matrice des appareils
+        id: calcul
+        env:
+          FILTRE: ${{ inputs.appareils }}
+        run: |
+          node -e '
+            const tous = [
+              { id: "android-tel", profil: "^pixel_7$" },
+              { id: "android-tablette", profil: "^pixel_tablet$" },
+            ];
+            const f = (process.env.FILTRE || "").split(",").map(s => s.trim()).filter(Boolean);
+            const choix = f.length ? tous.filter(a => f.includes(a.id)) : tous;
+            if (!choix.length) { console.error("::error::Aucun appareil ne correspond à « " + f.join(",") + " »"); process.exit(1); }
+            console.log("matrice=" + JSON.stringify({ appareil: choix }));
+          ' >> "$GITHUB_OUTPUT"
+          cat "$GITHUB_OUTPUT"
+
+  build:
+    if: inputs.app_run_id == ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: production
+    steps:
+      - name: Libérer de la place disque
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /usr/share/swift /usr/local/share/boost "$AGENT_TOOLSDIRECTORY/CodeQL" /usr/local/lib/node_modules/@azure 2>/dev/null || true
+          sudo docker image prune -af >/dev/null 2>&1 || true
+          df -h /
+
+      - name: Checkout monorepo
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          repository: ${{ secrets.MONOREPO_REPO }}
+          token: ${{ secrets.CI_PAT_TOKEN }}
+          path: app
+          ref: ${{ inputs.monorepo_ref }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 9
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: app/pnpm-lock.yaml
+
+      - name: Setup Java
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3.2.2
+        with:
+          packages: platform-tools
+
+      - name: Cache Gradle
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          # Clé PROPRE aux captures : ne jamais écrire dans le cache Gradle du build de production.
+          key: gradle-captures-${{ runner.os }}-${{ hashFiles('app/pnpm-lock.yaml') }}
+          restore-keys: gradle-captures-${{ runner.os }}-
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+
+      - name: Setup EAS CLI
+        uses: expo/expo-github-action@c7b66a9c327a43a8fa7c0158e7f30d6040d2481e # v8.2.1
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Install dependencies
+        run: cd app && pnpm install --frozen-lockfile
+
+      - name: Write Firebase google-services.json
+        env:
+          ANDROID_GOOGLE_SERVICES_JSON: ${{ secrets.ANDROID_GOOGLE_SERVICES_JSON }}
+        run: |
+          set -e
+          [ -n "$ANDROID_GOOGLE_SERVICES_JSON" ] || { echo "::error::ANDROID_GOOGLE_SERVICES_JSON manquant"; exit 1; }
+          echo "$ANDROID_GOOGLE_SERVICES_JSON" | base64 --decode > app/apps/mobile/google-services.json
+          jq empty app/apps/mobile/google-services.json || { echo "::error::google-services.json invalide (JSON)"; exit 1; }
+          sed -i '/^google-services\.json$/d' app/apps/mobile/.gitignore
+
+      # Profil `captures` : APK, signature de debug, aucun envoi Sentry.
+      - name: Build APK
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          EAS_BUILD_NO_EXPO_GO_WARNING: "true"
+          EXPO_NO_CAPABILITY_SYNC: "1"
+          EXPO_PUBLIC_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_KEY }}
+          SENTRY_DISABLE_AUTO_UPLOAD: "true"
+          ORG_GRADLE_PROJECT_reactNativeArchitectures: x86_64
+        run: |
+          cd app/apps/mobile
+          eas build --platform android --profile captures --local --non-interactive --output ../../app-captures.apk
+
+      - name: Artifact APK
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: app-captures-apk
+          path: app/app-captures.apk
+          retention-days: 1
+
+      - name: Nettoyage
+        if: always()
+        run: rm -f app/apps/mobile/google-services.json
+
+  captures:
+    needs: [plan, build]
+    if: ${{ !cancelled() && needs.plan.result == 'success' && (needs.build.result == 'success' || needs.build.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    timeout-minutes: 120
+    environment: production
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrice) }}
+    steps:
+      - name: Checkout monorepo
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          repository: ${{ secrets.MONOREPO_REPO }}
+          token: ${{ secrets.CI_PAT_TOKEN }}
+          path: app
+          ref: ${{ inputs.monorepo_ref }}
+
+      - name: Récupérer l'APK
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: app-captures-apk
+          path: .
+          run-id: ${{ inputs.app_run_id || github.run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+
+      - name: Setup Java
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Activer KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Profil d'appareil
+        id: profil
+        env:
+          MOTIF: ${{ matrix.appareil.profil }}
+        run: |
+          LISTE=$("$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" list device -c)
+          PROFIL=$(echo "$LISTE" | grep -E -m1 "$MOTIF" || true)
+          [ -n "$PROFIL" ] || { echo "::error::Aucun profil d'appareil ne correspond à « $MOTIF »"; exit 1; }
+          echo "Profil retenu : $PROFIL"
+          echo "nom=$PROFIL" >> "$GITHUB_OUTPUT"
+
+      - name: Install Maestro
+        run: |
+          curl -Ls "https://get.maestro.mobile.dev" | bash
+          echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
+          "$HOME/.maestro/bin/maestro" --version
+
+      # Image `google_apis` (sans Google Play) : pas de proposition d'enregistrement du mot de passe,
+      # adb root disponible (langue réglée par run-android.sh).
+      - name: Captures
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        env:
+          APK_PATH: ${{ github.workspace }}/app-captures.apk
+          DEMO_EMAIL: demo@meschasses.com
+          DEMO_PASSWORD: ${{ secrets.DEMO_PASSWORD }}
+          SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_KEY }}
+          SORTIE: ${{ github.workspace }}/captures
+          APPAREIL: ${{ matrix.appareil.id }}
+          LANGUE: ${{ inputs.langue }}
+          MAESTRO_CLI_NO_ANALYTICS: "1"
+          MAESTRO_DRIVER_STARTUP_TIMEOUT: "300000"
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: ${{ steps.profil.outputs.nom }}
+          ram-size: 4096M
+          disk-size: 6000M
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
+          disable-animations: true
+          script: echo "::add-mask::$DEMO_PASSWORD" && bash app/apps/mobile/store/creative-assets/captures/run-android.sh
+
+      # Images et bornes seules (pas les journaux Maestro, qui contiennent les saisies).
+      - name: Artifact captures (partie)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: partie-${{ matrix.appareil.id }}-${{ inputs.langue }}
+          path: |
+            captures/**/*.png
+            captures/**/*.bornes.json
+            captures/**/*.txt
+          retention-days: 3
+          if-no-files-found: warn
+
+      - name: Nettoyage
+        if: always()
+        run: rm -rf ~/.maestro/tests app-captures.apk
+
+  rassembler:
+    needs: captures
+    if: ${{ !cancelled() && needs.captures.result != 'skipped' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Récupérer les parties
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: partie-*-${{ inputs.langue }}
+          path: captures
+          merge-multiple: true
+
+      - name: Résumé
+        run: |
+          {
+            echo "## Captures Android (${{ inputs.langue }})"
+            for d in captures/*/; do
+              n=$(find "$d" -maxdepth 1 -name '[0-9][0-9]-*.png' | wc -l | tr -d ' ')
+              taille=$(find "$d" -maxdepth 1 -name '01-accueil.png' -exec node -e 'const f=require("fs").readFileSync(process.argv[1]);console.log(f.readUInt32BE(16)+" x "+f.readUInt32BE(20))' {} \; 2>/dev/null)
+              echo "- $(basename "$d") : $n captures ${taille:+($taille)}"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Artifact captures
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: captures-android-${{ inputs.langue }}
+          path: captures
+          retention-days: 7
+          if-no-files-found: error

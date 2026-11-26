@@ -1,0 +1,188 @@
+name: Visuels stores et réseaux
+
+# Monte les visuels finaux (App Store, Google Play, réseaux sociaux, site vitrine) à partir des
+# captures brutes, avec le moteur du monorepo : packages/store-visuals.
+#
+# Captures : soit on réutilise les runs indiqués en entrée (ids de runs < 7 jours des workflows
+# `captures-app-store.yml`, `captures-android.yml`, `captures-web.yml`), soit ce workflow les relance.
+# Rendu : conteneur Playwright FIGÉ (mcr.microsoft.com/playwright:v1.56.0-noble), le même qu'en local.
+# Sortie : artifacts `visuels-<langues>` (visuels + planche de relecture + rapport), 14 jours.
+
+on:
+  workflow_dispatch:
+    inputs:
+      monorepo_ref:
+        description: "SHA complet ou branche du monorepo (vide = branche par défaut)"
+        required: false
+        default: ""
+      langues:
+        description: "Langues, séparées par « , » (ex. fr,en)"
+        required: false
+        default: "fr,en"
+      cibles:
+        description: "Cibles, séparées par « , » (vide = cibles des stores)"
+        required: false
+        default: ""
+      run_captures_ios:
+        description: "Id d'un run `Captures App Store` à réutiliser (vide = le relancer)"
+        required: false
+        default: ""
+      run_captures_android:
+        description: "Id d'un run `Captures Android` à réutiliser (vide = le relancer)"
+        required: false
+        default: ""
+      run_captures_web:
+        description: "Id d'un run `Captures app web` à réutiliser (vide = ignorer les cibles site-web)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: visuels-${{ inputs.langues }}
+  cancel-in-progress: true
+
+jobs:
+  # Relance les captures manquantes (une langue à la fois : les parcours sont longs).
+  captures:
+    if: inputs.run_captures_ios == '' || inputs.run_captures_android == ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Rappel
+        run: |
+          {
+            echo "## Captures à relancer"
+            echo "Les captures brutes viennent de workflows dédiés (runners macOS et émulateurs Android)."
+            echo "Lancez-les d'abord, puis relancez ce workflow avec leurs ids de run :"
+            echo "- \`Captures App Store\` (langue = ${{ inputs.langues }})"
+            echo "- \`Captures Android (visuels Google Play)\`"
+            echo ""
+            echo "::error::run_captures_ios et run_captures_android sont requis (voir le résumé)."
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 1
+
+  rendu:
+    if: inputs.run_captures_ios != '' && inputs.run_captures_android != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: read
+    container:
+      image: mcr.microsoft.com/playwright:v1.56.0-noble
+      options: --ipc=host
+    steps:
+      - name: Checkout monorepo
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          repository: ${{ secrets.MONOREPO_REPO }}
+          token: ${{ secrets.CI_PAT_TOKEN }}
+          path: app
+          ref: ${{ inputs.monorepo_ref }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 9
+
+      - name: Install dependencies
+        run: cd app && pnpm install --frozen-lockfile
+
+      # Les captures iOS sortent par type de simulateur (« iPhone-17-Pro-Max », « iPad-Pro-13-… ») :
+      # le moteur attend des dossiers `iphone/` et `ipad/`.
+      - name: Captures iOS
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: captures-app-store-${{ startsWith(inputs.langues, 'fr') && 'fr' || 'en' }}
+          path: brut-ios
+          run-id: ${{ inputs.run_captures_ios }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+
+      - name: Captures Android
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: captures-android-${{ startsWith(inputs.langues, 'fr') && 'fr' || 'en' }}
+          path: brut-android
+          run-id: ${{ inputs.run_captures_android }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+
+      - name: Captures app web
+        if: inputs.run_captures_web != ''
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: captures-web-${{ startsWith(inputs.langues, 'fr') && 'fr' || 'en' }}
+          path: brut-web
+          run-id: ${{ inputs.run_captures_web }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+
+      - name: Ranger les captures
+        run: |
+          set -e
+          mkdir -p captures
+          ranger() { # <source> <nom attendu par le moteur>
+            [ -d "$1" ] || return 0
+            mkdir -p "captures/$2"
+            find "$1" -maxdepth 1 -type f \( -name '[0-9][0-9]-*.png' -o -name '*.bornes.json' \) \
+              -exec cp {} "captures/$2/" \;
+          }
+          # iOS : un dossier par type de simulateur.
+          for d in brut-ios/*/; do
+            case "$(basename "$d")" in
+              iPad*|ipad*) ranger "$d" ipad ;;
+              iPhone*|iphone*) ranger "$d" iphone ;;
+            esac
+          done
+          # Android et web : les dossiers portent déjà le bon nom.
+          for n in android-tel android-tablette web; do
+            for racine in brut-android brut-web; do ranger "$racine/$n" "$n"; done
+          done
+          for n in iphone ipad android-tel android-tablette web; do
+            [ -d "captures/$n" ] && echo "- $n : $(ls "captures/$n"/*.png 2>/dev/null | wc -l) captures"
+          done >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Rendu
+        working-directory: app/packages/store-visuals
+        env:
+          CIBLES: ${{ inputs.cibles }}
+        run: |
+          [ -n "$CIBLES" ] && ARGS="--cibles $CIBLES" || ARGS=""
+          # shellcheck disable=SC2086
+          ../../node_modules/.bin/tsx src/cli.ts render \
+            --captures "$GITHUB_WORKSPACE/captures" \
+            --langues "${{ inputs.langues }}" \
+            --sortie "$GITHUB_WORKSPACE/visuels" $ARGS
+
+      - name: Validation
+        working-directory: app/packages/store-visuals
+        env:
+          CIBLES: ${{ inputs.cibles }}
+        run: |
+          [ -n "$CIBLES" ] && ARGS="--cibles $CIBLES" || ARGS=""
+          # shellcheck disable=SC2086
+          ../../node_modules/.bin/tsx src/cli.ts validate \
+            --sortie "$GITHUB_WORKSPACE/visuels" --langues "${{ inputs.langues }}" $ARGS
+
+      - name: Publication (simulation, aucune écriture)
+        if: always()
+        working-directory: app/packages/store-visuals
+        run: |
+          for store in apple google; do
+            ../../node_modules/.bin/tsx src/cli.ts publish \
+              --sortie "$GITHUB_WORKSPACE/visuels" --langues "${{ inputs.langues }}" --store "$store" \
+              >> "$GITHUB_STEP_SUMMARY" || true
+          done
+
+      - name: Artifact visuels
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: visuels-${{ inputs.langues }}
+          path: visuels
+          retention-days: 14
+          if-no-files-found: error

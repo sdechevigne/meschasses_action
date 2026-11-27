@@ -2,10 +2,19 @@ name: Captures App Store
 
 # Captures d'écran de l'app iOS sur simulateurs (grand iPhone, iPad 13 pouces ; l'iPhone Duo
 # a son propre workflow, captures-iphone-duo.yml), avec le compte de démonstration (données fictives).
+#
+# Deux parcours Maestro, sélectionnés par l'entrée `parcours` :
+#   - `parcours.yaml`      (défaut) : captures App Store, un écran par fonctionnalité
+#   - `parcours-site.yaml`           : captures des pages « fonctionnalités » du site vitrine
+#                                      (iPhone Pro Max uniquement ; dépot `meschasses-landing`)
+#
 # Le parcours et le script vivent dans le monorepo :
-#   apps/mobile/store/creative-assets/captures/ (run.sh, parcours.yaml, ecran.yaml)
+#   apps/mobile/store/creative-assets/captures/ (run.sh, parcours.yaml, parcours-site.yaml,
+#   login.yaml, ecran.yaml, saisie-lente.yaml)
 # Les images brutes sortent en artifact (3 jours) ; la mise en forme et l'envoi à
-# App Store Connect se font ensuite hors de ce dépôt.
+# App Store Connect se font ensuite hors de ce dépôt. Les captures « site » sont
+# rapatriées à la main dans le dépôt `meschasses-landing` par le script
+# `scripts/captures-nouveautes.sh`.
 
 on:
   workflow_dispatch:
@@ -36,13 +45,22 @@ on:
         type: choice
         options: [fr, en]
         default: fr
+      parcours:
+        description: "Parcours Maestro à exécuter (défaut : captures App Store)"
+        required: false
+        type: choice
+        options: [parcours.yaml, parcours-site.yaml]
+        default: parcours.yaml
 
 # Repo PUBLIC : le GITHUB_TOKEN ne sert qu'à l'artifact.
 permissions:
   contents: read
 
 concurrency:
-  group: captures-app-store-${{ inputs.langue }}
+  # Une file par (parcours, langue) : les runs « App Store » et « site » ne s'écrasent pas,
+  # et chaque langue reste indépendante — la bascule du défaut d'entrée n'annule pas le run
+  # en cours.
+  group: captures-app-store-${{ inputs.parcours }}-${{ inputs.langue }}
   cancel-in-progress: true
 
 jobs:
@@ -207,6 +225,7 @@ jobs:
           SORTIE: ${{ github.workspace }}/captures
           APPAREILS: ${{ inputs.appareils }}
           LANGUE: ${{ inputs.langue }}
+          PARCOURS: ${{ inputs.parcours }}
           MAESTRO_CLI_NO_ANALYTICS: "1"
           MAESTRO_DRIVER_STARTUP_TIMEOUT: "300000"
         run: |
@@ -217,11 +236,14 @@ jobs:
           bash app/apps/mobile/store/creative-assets/captures/run.sh
 
       # Images seules (pas les journaux Maestro, qui contiennent les saisies).
+      # Le nom de l'artifact porte aussi le PARCOURS (mais, pour rester compatible avec
+      # les outils qui attendaient `captures-app-store-<langue>`, le parcours historique
+      # garde ce nom ; seul `parcours-site.yaml` reçoit un suffixe propre).
       - name: Artifact captures
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: captures-app-store-${{ inputs.langue }}
+          name: ${{ inputs.parcours == 'parcours-site.yaml' && format('captures-site-{0}', inputs.langue) || format('captures-app-store-{0}', inputs.langue) }}
           path: |
             captures/**/*.png
             captures/**/*.ips

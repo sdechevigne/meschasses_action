@@ -42,7 +42,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: captures-app-store
+  group: captures-app-store-${{ inputs.langue }}
   cancel-in-progress: true
 
 jobs:

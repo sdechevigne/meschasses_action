@@ -3,9 +3,9 @@ name: Captures Android (visuels Google Play)
 # Captures brutes de l'app Android pour les visuels Google Play : Pixel 7 (téléphone) et Pixel Tablet,
 # en portrait, avec le compte de démonstration (données fictives). Même parcours que l'iOS.
 # Le script vit dans le monorepo :
-#   apps/mobile/store/creative-assets/captures/ (run-android.sh, parcours.yaml, ecran.yaml, bornes.mjs)
+#   apps/mobile/store/creative-assets/captures/ (run-android.sh, parcours.yaml, ecran.yaml)
 # Sortie : artifact `captures-android-<langue>` rangé comme l'attend le moteur de visuels :
-#   android-tel/NN-nom.png · android-tablette/NN-nom.png (+ NN-nom.bornes.json pour les encarts).
+#   android-tel/NN-nom.png · android-tablette/NN-nom.png.
 
 on:
   workflow_dispatch:
@@ -253,7 +253,7 @@ jobs:
           disable-animations: true
           script: echo "::add-mask::$DEMO_PASSWORD" && bash app/apps/mobile/store/creative-assets/captures/run-android.sh
 
-      # Images et bornes seules (pas les journaux Maestro, qui contiennent les saisies).
+      # Images seules (pas les journaux Maestro, qui contiennent les saisies).
       - name: Artifact captures (partie)
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -261,7 +261,6 @@ jobs:
           name: partie-${{ matrix.appareil.id }}-${{ inputs.langue }}
           path: |
             captures/**/*.png
-            captures/**/*.bornes.json
             captures/**/*.txt
           retention-days: 3
           if-no-files-found: warn

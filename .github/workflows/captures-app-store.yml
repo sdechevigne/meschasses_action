@@ -224,7 +224,6 @@ jobs:
           name: captures-app-store-${{ inputs.langue }}
           path: |
             captures/**/*.png
-            captures/**/*.bornes.json
             captures/**/*.ips
             captures/**/*.txt
           retention-days: 3

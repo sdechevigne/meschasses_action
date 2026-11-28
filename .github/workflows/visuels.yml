@@ -142,13 +142,18 @@ jobs:
               # (téléchargement d'un .zip puis extraction dans dest/<run>/)
               local tmp_dir="$dest/run-$i"
               mkdir -p "$tmp_dir"
+              # L'image Playwright n'embarque pas `gh` : on tape directement l'API REST avec curl.
               local art_id
-              art_id=$(gh api "repos/$REPO/actions/runs/$run/artifacts" --jq ".artifacts[] | select(.name == \"$artefact\") | .id" | head -1)
+              art_id=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+                "https://api.github.com/repos/$REPO/actions/runs/$run/artifacts" \
+                | python3 -c "import sys,json; a=[x for x in json.load(sys.stdin)['artifacts'] if x['name']=='$artefact']; print(a[0]['id'] if a else '')")
               if [ -z "$art_id" ]; then
                 echo "::warning::Pas d'artifact « $artefact » dans le run $run — ignoré."
                 continue
               fi
-              gh api "repos/$REPO/actions/artifacts/$art_id/zip" > "$tmp_dir/a.zip"
+              curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+                "https://api.github.com/repos/$REPO/actions/artifacts/$art_id/zip" \
+                -o "$tmp_dir/a.zip"
               (cd "$tmp_dir" && python3 -c "import zipfile; zipfile.ZipFile('a.zip').extractall('.')" && rm a.zip)
             done
           }

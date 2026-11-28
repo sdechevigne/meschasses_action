@@ -3,10 +3,21 @@ name: Visuels stores et réseaux
 # Monte les visuels finaux (App Store, Google Play, réseaux sociaux, site vitrine) à partir des
 # captures brutes, avec le moteur du monorepo : packages/store-visuals.
 #
-# Captures : soit on réutilise les runs indiqués en entrée (ids de runs < 7 jours des workflows
-# `captures-app-store.yml`, `captures-android.yml`, `captures-web.yml`), soit ce workflow les relance.
-# Rendu : conteneur Playwright FIGÉ (mcr.microsoft.com/playwright:v1.56.0-noble), le même qu'en local.
-# Sortie : artifacts `visuels-<langues>` (visuels + planche de relecture + rapport), 14 jours.
+# Captures : on fournit UN OU PLUSIEURS ids de runs de captures PAR LANGUE. Chaque langue peut
+# viser plusieurs runs iOS (ex. l'iPhone vient d'un run, l'iPad d'un autre) : les artifacts sont
+# fusionnés côté langue AVANT le rendu. Le simulateur tournait dans la langue cible, donc les
+# captures FR et EN sont dans des dossiers différents et le moteur est appelé UNE FOIS PAR LANGUE
+# (un dossier captures/<langue>/ par langue, mais l'arborescence attendue par le moteur est
+# <dossier>/<appareil>/NN-nom.png — on lance donc un render par langue avec --sortie dans un
+# sous-dossier commun, puis on fusionne).
+#
+# Rendu : conteneur Playwright FIGÉ (mcr.microsoft.com/playwright:v1.56.0-noble), le même qu'en
+# local. Sortie : UN artifact `visuels-<langues>` contenant toutes les langues côte à côte
+# (<langue>/<cible>/NN-<scene>.png), plus la planche de relecture et le rapport.
+#
+# Multi-langue : une langue demandée doit fournir des captures COMPLÈTES (iPhone + iPad +
+# android-tel + android-tablette, chacun avec ses NN-*.png numérotés). Une langue incomplète fait
+# échouer le job AVANT le rendu, en nommant ce qui manque.
 
 on:
   workflow_dispatch:
@@ -23,16 +34,30 @@ on:
         description: "Cibles, séparées par « , » (vide = cibles des stores)"
         required: false
         default: ""
-      run_captures_ios:
-        description: "Id d'un run `Captures App Store` à réutiliser (vide = le relancer)"
+      # Un ou plusieurs ids de runs `Captures App Store` séparés par « , ». Chaque run peut couvrir
+      # un ou plusieurs simulateurs (iPhone + iPad) ; les artifacts sont fusionnés.
+      run_captures_ios_fr:
+        description: "Id(s) de run `Captures App Store` pour le FR (vide = FR non rendu)"
         required: false
         default: ""
-      run_captures_android:
-        description: "Id d'un run `Captures Android` à réutiliser (vide = le relancer)"
+      run_captures_ios_en:
+        description: "Id(s) de run `Captures App Store` pour l'EN (vide = EN non rendu)"
         required: false
         default: ""
-      run_captures_web:
-        description: "Id d'un run `Captures app web` à réutiliser (vide = ignorer les cibles site-web)"
+      run_captures_android_fr:
+        description: "Id(s) de run `Captures Android` pour le FR"
+        required: false
+        default: ""
+      run_captures_android_en:
+        description: "Id(s) de run `Captures Android` pour l'EN"
+        required: false
+        default: ""
+      run_captures_web_fr:
+        description: "Id(s) de run `Captures app web` pour le FR (vide = site-web ignoré)"
+        required: false
+        default: ""
+      run_captures_web_en:
+        description: "Id(s) de run `Captures app web` pour l'EN"
         required: false
         default: ""
 
@@ -44,27 +69,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Relance les captures manquantes (une langue à la fois : les parcours sont longs).
-  captures:
-    if: inputs.run_captures_ios == '' || inputs.run_captures_android == ''
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Rappel
-        run: |
-          {
-            echo "## Captures à relancer"
-            echo "Les captures brutes viennent de workflows dédiés (runners macOS et émulateurs Android)."
-            echo "Lancez-les d'abord, puis relancez ce workflow avec leurs ids de run :"
-            echo "- \`Captures App Store\` (langue = ${{ inputs.langues }})"
-            echo "- \`Captures Android (visuels Google Play)\`"
-            echo ""
-            echo "::error::run_captures_ios et run_captures_android sont requis (voir le résumé)."
-          } >> "$GITHUB_STEP_SUMMARY"
-          exit 1
-
   rendu:
-    if: inputs.run_captures_ios != '' && inputs.run_captures_android != ''
     runs-on: ubuntu-latest
     timeout-minutes: 60
     # Les secrets MONOREPO_REPO et CI_PAT_TOKEN vivent dans l'environnement `production`
@@ -95,76 +100,167 @@ jobs:
       - name: Install dependencies
         run: cd app && pnpm install --frozen-lockfile
 
-      # Les captures iOS sortent par type de simulateur (« iPhone-17-Pro-Max », « iPad-Pro-13-… ») :
-      # le moteur attend des dossiers `iphone/` et `ipad/`.
-      - name: Captures iOS
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: captures-app-store-${{ startsWith(inputs.langues, 'fr') && 'fr' || 'en' }}
-          path: brut-ios
-          run-id: ${{ inputs.run_captures_ios }}
-          github-token: ${{ github.token }}
-          repository: ${{ github.repository }}
-
-      - name: Captures Android
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: captures-android-${{ startsWith(inputs.langues, 'fr') && 'fr' || 'en' }}
-          path: brut-android
-          run-id: ${{ inputs.run_captures_android }}
-          github-token: ${{ github.token }}
-          repository: ${{ github.repository }}
-
-      - name: Captures app web
-        if: inputs.run_captures_web != ''
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: captures-web-${{ startsWith(inputs.langues, 'fr') && 'fr' || 'en' }}
-          path: brut-web
-          run-id: ${{ inputs.run_captures_web }}
-          github-token: ${{ github.token }}
-          repository: ${{ github.repository }}
-
-      - name: Ranger les captures
+      # Télécharge les artifacts de TOUS les runs cités (par langue, iOS/Android/Web), sous
+      # brut-<langue>-<famille>/<run_id>/. On fusionne ensuite dans captures/<langue>/<appareil>/.
+      - name: Télécharger les artifacts de captures (multi-run, multi-langue)
+        env:
+          IOS_FR: ${{ inputs.run_captures_ios_fr }}
+          IOS_EN: ${{ inputs.run_captures_ios_en }}
+          AND_FR: ${{ inputs.run_captures_android_fr }}
+          AND_EN: ${{ inputs.run_captures_android_en }}
+          WEB_FR: ${{ inputs.run_captures_web_fr }}
+          WEB_EN: ${{ inputs.run_captures_web_en }}
+          LANGUES: ${{ inputs.langues }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
         run: |
-          set -e
-          mkdir -p captures
-          ranger() { # <source> <nom attendu par le moteur>
-            [ -d "$1" ] || return 0
-            mkdir -p "captures/$2"
-            find "$1" -maxdepth 1 -type f \( -name '[0-9][0-9]-*.png' -o -name '*.bornes.json' \) \
-              -exec cp {} "captures/$2/" \;
+          set -euo pipefail
+          # Pour chaque entrée « famille / langue » : liste d'ids de runs, nom d'artifact à
+          # chercher, dossier cible. `jq` est présent dans l'image Playwright.
+          telecharger() {
+            # $1 = langue (fr/en), $2 = famille (ios/android/web), $3 = ids (liste ", ")
+            local langue="$1" famille="$2" ids="$3"
+            [ -z "$ids" ] && return 0
+            local artefact="captures-app-store-$langue"
+            case "$famille" in
+              ios)     artefact="captures-app-store-$langue" ;;
+              android) artefact="captures-android-$langue" ;;
+              web)     artefact="captures-web-$langue" ;;
+            esac
+            local dest="brut-$langue-$famille"
+            mkdir -p "$dest"
+            local i=0
+            for run in $(echo "$ids" | tr ',' ' '); do
+              run="${run## }"; run="${run%% }"
+              [ -z "$run" ] && continue
+              i=$((i + 1))
+              echo "→ run $run · $artefact"
+              # L'API v4 de download-artifact ne gère pas les listes dynamiques de runs :
+              # on utilise l'API REST directement, via gh.
+              # (téléchargement d'un .zip puis extraction dans dest/<run>/)
+              local tmp_dir="$dest/run-$i"
+              mkdir -p "$tmp_dir"
+              local art_id
+              art_id=$(gh api "repos/$REPO/actions/runs/$run/artifacts" --jq ".artifacts[] | select(.name == \"$artefact\") | .id" | head -1)
+              if [ -z "$art_id" ]; then
+                echo "::warning::Pas d'artifact « $artefact » dans le run $run — ignoré."
+                continue
+              fi
+              gh api "repos/$REPO/actions/artifacts/$art_id/zip" > "$tmp_dir/a.zip"
+              (cd "$tmp_dir" && python3 -c "import zipfile; zipfile.ZipFile('a.zip').extractall('.')" && rm a.zip)
+            done
           }
-          # iOS : un dossier par type de simulateur.
-          for d in brut-ios/*/; do
-            case "$(basename "$d")" in
-              iPad*|ipad*) ranger "$d" ipad ;;
-              iPhone*|iphone*) ranger "$d" iphone ;;
+          # Toutes les langues demandées : on ne télécharge que celles pour lesquelles un id est fourni.
+          for langue in $(echo "$LANGUES" | tr ',' ' '); do
+            langue="${langue## }"; langue="${langue%% }"
+            [ -z "$langue" ] && continue
+            case "$langue" in
+              fr)
+                telecharger fr ios "$IOS_FR"
+                telecharger fr android "$AND_FR"
+                telecharger fr web "$WEB_FR"
+                ;;
+              en)
+                telecharger en ios "$IOS_EN"
+                telecharger en android "$AND_EN"
+                telecharger en web "$WEB_EN"
+                ;;
+              *)
+                echo "::error::Langue inconnue « $langue » (fr, en attendus)."
+                exit 1
+                ;;
             esac
           done
-          # Android et web : les dossiers portent déjà le bon nom.
-          for n in android-tel android-tablette web; do
-            for racine in brut-android brut-web; do ranger "$racine/$n" "$n"; done
-          done
-          # `|| true` : avec `set -e`, un dossier absent ne doit pas tuer le step de résumé
-          # (vécu le 2026-11-28, run 46123899900 : artifact Android sans dossier tablette).
-          for n in iphone ipad android-tel android-tablette web; do
-            if [ -d "captures/$n" ]; then
-              echo "- $n : $(ls "captures/$n"/*.png 2>/dev/null | wc -l) captures"
-            fi || true
-          done >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Rendu
+      - name: Ranger et contrôler les captures (par langue)
+        env:
+          LANGUES: ${{ inputs.langues }}
+        run: |
+          set -euo pipefail
+          mkdir -p captures
+          # ranger $racine $langue $appareil_nom : copie les NN-*.png du dossier brut (sous-arbre)
+          # vers captures/<langue>/<appareil_nom>/. Les captures iOS sortent par simulateur (nom
+          # iPhone-… ou iPad-…) et sont redistribuées ; Android et web portent déjà android-tel,
+          # android-tablette, web.
+          ranger_sousdossier() {
+            local src="$1" dest_dir="$2"
+            mkdir -p "$dest_dir"
+            find "$src" -maxdepth 1 -type f -name '[0-9][0-9]-*.png' \
+              -exec cp -n {} "$dest_dir/" \;
+          }
+          ranger_famille() {
+            # $1 = langue, $2 = racine (brut-<langue>-<famille>), $3 = famille
+            local langue="$1" racine="$2" famille="$3"
+            [ -d "$racine" ] || return 0
+            # $racine/run-N/<quelque chose>/*.png
+            while IFS= read -r d; do
+              [ -d "$d" ] || continue
+              case "$(basename "$d")" in
+                iPhone*|iphone*) ranger_sousdossier "$d" "captures/$langue/iphone" ;;
+                iPad*|ipad*)     ranger_sousdossier "$d" "captures/$langue/ipad" ;;
+                android-tel)     ranger_sousdossier "$d" "captures/$langue/android-tel" ;;
+                android-tablette) ranger_sousdossier "$d" "captures/$langue/android-tablette" ;;
+                web)             ranger_sousdossier "$d" "captures/$langue/web" ;;
+              esac
+            done < <(find "$racine" -mindepth 2 -maxdepth 2 -type d)
+          }
+
+          # Ensemble des captures iOS attendues (13 écrans, numérotés 01..13). Si ton moteur
+          # exige une liste précise, elle vit dans son code ; ce contrôle n'impose QUE les
+          # fichiers numérotés présents dans un dossier « bien formé ».
+          doit_exister_et_etre_peuple() {
+            local dossier="$1" min="$2"
+            [ -d "$dossier" ] || { echo "::error::Dossier manquant : $dossier"; return 1; }
+            local n
+            n=$(find "$dossier" -maxdepth 1 -type f -name '[0-9][0-9]-*.png' | wc -l)
+            if [ "$n" -lt "$min" ]; then
+              echo "::error::$dossier : $n captures trouvées, au moins $min attendues."
+              return 1
+            fi
+            return 0
+          }
+
+          probleme=0
+          for langue in $(echo "$LANGUES" | tr ',' ' '); do
+            langue="${langue## }"; langue="${langue%% }"
+            [ -z "$langue" ] && continue
+            ranger_famille "$langue" "brut-$langue-ios"     ios
+            ranger_famille "$langue" "brut-$langue-android" android
+            ranger_famille "$langue" "brut-$langue-web"     web
+            echo "### Captures $langue" >> "$GITHUB_STEP_SUMMARY"
+            for n in iphone ipad android-tel android-tablette; do
+              # Chacune des cibles stores a besoin de ses dossiers : on exige au moins 8 captures.
+              if ! doit_exister_et_etre_peuple "captures/$langue/$n" 8; then
+                probleme=1
+              else
+                nb=$(find "captures/$langue/$n" -maxdepth 1 -type f -name '[0-9][0-9]-*.png' | wc -l)
+                echo "- $n : $nb captures" >> "$GITHUB_STEP_SUMMARY"
+              fi
+            done
+          done
+          [ "$probleme" -eq 0 ] || { echo "::error::Captures incomplètes (voir le résumé)."; exit 1; }
+
+      - name: Rendu (une fois par langue, sorties fusionnées)
         working-directory: app/packages/store-visuals
         env:
           CIBLES: ${{ inputs.cibles }}
+          LANGUES: ${{ inputs.langues }}
         run: |
+          set -euo pipefail
           [ -n "$CIBLES" ] && ARGS="--cibles $CIBLES" || ARGS=""
-          # shellcheck disable=SC2086
-          ../../node_modules/.bin/tsx src/cli.ts render \
-            --captures "$GITHUB_WORKSPACE/captures" \
-            --langues "${{ inputs.langues }}" \
-            --sortie "$GITHUB_WORKSPACE/visuels" $ARGS
+          mkdir -p "$GITHUB_WORKSPACE/visuels"
+          # Un render par langue, chacun avec son propre dossier captures. Le moteur écrit dans
+          # <sortie>/<langue>/<cible>/... : plusieurs langues partagent donc le même dossier sans
+          # collision (les arborescences sont disjointes par langue).
+          for langue in $(echo "$LANGUES" | tr ',' ' '); do
+            langue="${langue## }"; langue="${langue%% }"
+            [ -z "$langue" ] && continue
+            # shellcheck disable=SC2086
+            ../../node_modules/.bin/tsx src/cli.ts render \
+              --captures "$GITHUB_WORKSPACE/captures/$langue" \
+              --langues "$langue" \
+              --sortie "$GITHUB_WORKSPACE/visuels" $ARGS
+          done
 
       - name: Validation
         working-directory: app/packages/store-visuals

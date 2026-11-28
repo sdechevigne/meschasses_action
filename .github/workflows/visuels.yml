@@ -146,8 +146,12 @@ jobs:
           for n in android-tel android-tablette web; do
             for racine in brut-android brut-web; do ranger "$racine/$n" "$n"; done
           done
+          # `|| true` : avec `set -e`, un dossier absent ne doit pas tuer le step de résumé
+          # (vécu le 2026-11-28, run 46123899900 : artifact Android sans dossier tablette).
           for n in iphone ipad android-tel android-tablette web; do
-            [ -d "captures/$n" ] && echo "- $n : $(ls "captures/$n"/*.png 2>/dev/null | wc -l) captures"
+            if [ -d "captures/$n" ]; then
+              echo "- $n : $(ls "captures/$n"/*.png 2>/dev/null | wc -l) captures"
+            fi || true
           done >> "$GITHUB_STEP_SUMMARY"
 
       - name: Rendu

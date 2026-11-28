@@ -25,6 +25,8 @@
 //   CHECK_ONLY        - "1" pour le contrôle en lecture seule
 
 import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { resolve } from 'node:path';
 import { createAscClient, sleep } from './lib/asc.mjs';
 import { notesForLocale, readNouveautes } from './lib/nouveautes.mjs';
 import { FICHE_DIR, appliquerFicheAppStore, chargerFiches, importerModuleFiche, verifierPublication } from './lib/fiche-stores.mjs';
@@ -32,6 +34,10 @@ import { FICHE_DIR, appliquerFicheAppStore, chargerFiches, importerModuleFiche, 
 const CHECK_ONLY = process.env.CHECK_ONLY === '1';
 // Publie aussi la fiche (apps/mobile/store/fiche/) : input `fiche` de mise-en-production.yml.
 const PUBLIER_FICHE = process.env.PUBLIER_FICHE === '1';
+// Dossier `visuels/` à publier (artifact téléchargé depuis un run visuels.yml) : input `visuels_run`.
+// Vide = les captures en ligne ne sont pas touchées (comportement historique).
+const VISUELS_DIR = process.env.VISUELS_DIR || '';
+const VISUELS_LANGUES = process.env.VISUELS_LANGUES || '';
 const BUNDLE_ID = process.env.ASC_BUNDLE_ID;
 const BUILD_NUMBER = process.env.BUILD_NUMBER;
 const APP_JSON = process.env.APP_JSON || 'app/apps/mobile/app.json';
@@ -201,6 +207,33 @@ async function main() {
 
   // --- 2 bis. Fiche (crée les locales absentes, ex. en-GB / en-US) -----------
   if (fiches) await appliquerFicheAppStore(api, { appId, versionId: target.id, fiches });
+
+  // --- 2 ter. Visuels de la fiche (si un artifact a été téléchargé) ---------
+  // Appel du CLI `@meschasses/store-visuals publish --store apple --apply` : il connaît
+  // déjà la chaîne appScreenshotSets / upload / ordre, idempotent par SHA-256.
+  if (VISUELS_DIR) {
+    const langues = VISUELS_LANGUES || 'fr,en';
+    console.log(`Publication des visuels Apple depuis ${VISUELS_DIR} (langues : ${langues}).`);
+    const cli = resolve('app/node_modules/.bin/tsx');
+    const script = resolve('app/packages/store-visuals/src/cli.ts');
+    const sortie = resolve(VISUELS_DIR);
+    const r = spawnSync(
+      cli,
+      [script, 'publish', '--store', 'apple', '--sortie', sortie, '--langues', langues, '--apply'],
+      {
+        stdio: 'inherit',
+        env: {
+          ...process.env,
+          JAI_VALIDE_LES_VISUELS: '1',
+          ASC_PRIVATE_KEY: process.env.ASC_PRIVATE_KEY,
+          ASC_KEY_ID: process.env.ASC_KEY_ID,
+          ASC_ISSUER_ID: process.env.ASC_ISSUER_ID,
+          ASC_BUNDLE_ID: BUNDLE_ID,
+        },
+      },
+    );
+    if (r.status !== 0) throw new Error(`Publication des visuels Apple échouée (code ${r.status}).`);
+  }
 
   // --- 3. Nouveautés ----------------------------------------------------------
   const locs = await localesOf(target);

@@ -14,6 +14,14 @@ name: Mise en production
 # Les numéros de build restent calculés par chaque workflow (son run_number +
 # OFFSET) : c'est pourquoi on les DÉCLENCHE au lieu de les appeler en
 # workflow réutilisable (qui hériterait du run_number de ce workflow).
+#
+# Input `visuels_run` : id d'un run `visuels.yml` réussi (<= 14 jours). Vide =
+# captures en ligne inchangées. Fourni = étape de contrôle AVANT tout build
+# (téléchargement artifact, validate dimensions/nombres : 10 max Apple, 8 max
+# Google). Les deux workflows build téléchargent ensuite le même artifact et
+# publient : Apple par la chaîne App Store Connect officielle (appScreenshotSets
+# → upload → ordre), Google dans l'edit de la release (deleteall + upload +
+# commit avec la release).
 
 on:
   workflow_dispatch:
@@ -26,6 +34,10 @@ on:
         description: "Publier aussi la fiche store (apps/mobile/store/fiche/) — ex. ouverture de l'anglais"
         type: boolean
         default: false
+      visuels_run:
+        description: "Id d'un run `Visuels stores et réseaux` réussi (<= 14 jours) — vide = captures inchangées"
+        required: false
+        default: ""
 
 permissions: {}
 
@@ -34,9 +46,89 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Contrôle LECTURE SEULE du jeu de visuels (si fourni) AVANT tout build : une
+  # alerte y fait échouer la mise en production immédiatement, sans consommer
+  # de numéro de build ni de piste Play.
+  controler-visuels:
+    if: ${{ inputs.visuels_run != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Checkout monorepo
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          repository: ${{ secrets.MONOREPO_REPO }}
+          token: ${{ secrets.CI_PAT_TOKEN }}
+          path: app
+          ref: ${{ inputs.commit }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 9
+
+      - name: Install dependencies
+        working-directory: app
+        run: pnpm install --frozen-lockfile
+
+      - name: Télécharger l'artifact des visuels
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          # Les runs visuels.yml publient un artifact par liste de langues.
+          pattern: visuels-*
+          path: visuels-brut
+          run-id: ${{ inputs.visuels_run }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+
+      - name: Fusionner les artifacts (une entrée par langue)
+        id: fusion
+        run: |
+          set -e
+          mkdir -p visuels
+          # L'action download-artifact dépose chaque artifact dans un sous-dossier
+          # qui porte son nom (ex. visuels-fr/). On fusionne : l'arborescence
+          # interne est <langue>/<cible>/NN-<scene>.png + publication.json/rapport.json.
+          for d in visuels-brut/*/; do cp -r "$d"/. visuels/; done
+          # Langues présentes = sous-dossiers de visuels/ (hors fichiers racine).
+          langues=$(find visuels -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort | paste -sd, -)
+          if [ -z "$langues" ]; then
+            echo "::error::Aucune langue trouvée dans l'artifact visuels_run=${{ inputs.visuels_run }}."
+            exit 1
+          fi
+          echo "langues=$langues" >> "$GITHUB_OUTPUT"
+          echo "- langues : $langues" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Validation (dimensions, nombres, canal alpha)
+        working-directory: app/packages/store-visuals
+        env:
+          LANGUES: ${{ steps.fusion.outputs.langues }}
+        run: |
+          ../../node_modules/.bin/tsx src/cli.ts validate \
+            --sortie "$GITHUB_WORKSPACE/visuels" --langues "$LANGUES"
+
+      - name: Publication (simulation, aucune écriture)
+        working-directory: app/packages/store-visuals
+        env:
+          LANGUES: ${{ steps.fusion.outputs.langues }}
+        run: |
+          for store in apple google; do
+            ../../node_modules/.bin/tsx src/cli.ts publish \
+              --sortie "$GITHUB_WORKSPACE/visuels" --langues "$LANGUES" --store "$store" \
+              >> "$GITHUB_STEP_SUMMARY"
+          done
+
   publier:
     runs-on: ubuntu-latest
     timeout-minutes: 180
+    # Si des visuels sont demandés, attendre que leur contrôle soit vert.
+    needs: [controler-visuels]
+    if: ${{ !failure() && !cancelled() }}
     permissions:
       actions: write
     env:
@@ -47,14 +139,15 @@ jobs:
       # « mise en production » de chaque workflow (SHA complet intégré à la branche).
       COMMIT: ${{ inputs.commit }}
       FICHE: ${{ inputs.fiche }}
+      VISUELS_RUN: ${{ inputs.visuels_run }}
     steps:
       - name: Lancer iOS et Android, attendre la fin
         run: |
           set -euo pipefail
           since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-          gh workflow run expo-ios-testflight.yml --ref "$REF" -f destination=production -f monorepo_ref="$COMMIT" -f fiche="$FICHE"
-          gh workflow run expo-android-play.yml --ref "$REF" -f destination=production -f monorepo_ref="$COMMIT" -f fiche="$FICHE"
+          gh workflow run expo-ios-testflight.yml --ref "$REF" -f destination=production -f monorepo_ref="$COMMIT" -f fiche="$FICHE" -f visuels_run="$VISUELS_RUN"
+          gh workflow run expo-android-play.yml --ref "$REF" -f destination=production -f monorepo_ref="$COMMIT" -f fiche="$FICHE" -f visuels_run="$VISUELS_RUN"
 
           # Retrouve le run créé par ce dispatch (premier run workflow_dispatch
           # créé après `since`).

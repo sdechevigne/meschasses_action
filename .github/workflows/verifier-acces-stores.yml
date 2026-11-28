@@ -71,12 +71,27 @@ jobs:
           GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
         run: node ci/.github/scripts/verifier-fiche-stores.mjs
 
+      # Visuels des fiches : liste les captures en ligne (par locale, displayType /
+      # imageType) pour prouver l'authentification et les identifiants de version /
+      # listing avant une première publication réelle. RIEN n'est écrit.
+      - name: Visuels des fiches (écart)
+        id: visuels
+        continue-on-error: true
+        env:
+          ASC_ISSUER_ID: ${{ secrets.APPSTORE_ISSUER_ID }}
+          ASC_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
+          ASC_PRIVATE_KEY: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
+          ASC_BUNDLE_ID: ${{ secrets.IOS_BUNDLE_ID || 'com.meschasses' }}
+          GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
+        run: node ci/.github/scripts/verifier-visuels-stores.mjs
+
       - name: Bilan
         env:
           IOS: ${{ steps.ios.outcome }}
           ANDROID: ${{ steps.android.outcome }}
           VERSION: ${{ steps.version.outcome }}
           FICHE: ${{ steps.fiche.outcome }}
+          VISUELS: ${{ steps.visuels.outcome }}
         run: |
-          echo "App Store : $IOS · Google Play : $ANDROID · Version/nouveautés : $VERSION · Fiches : $FICHE"
-          [ "$IOS" = success ] && [ "$ANDROID" = success ] && [ "$VERSION" = success ] && [ "$FICHE" = success ]
+          echo "App Store : $IOS · Google Play : $ANDROID · Version/nouveautés : $VERSION · Fiches : $FICHE · Visuels : $VISUELS"
+          [ "$IOS" = success ] && [ "$ANDROID" = success ] && [ "$VERSION" = success ] && [ "$FICHE" = success ] && [ "$VISUELS" = success ]

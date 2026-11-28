@@ -20,6 +20,10 @@ on:
         description: "Publier aussi la fiche store (apps/mobile/store/fiche/ du monorepo) — production seulement"
         type: boolean
         default: false
+      visuels_run:
+        description: "Id d'un run `Visuels stores et réseaux` réussi — publier aussi les captures (production seulement)"
+        required: false
+        default: ""
       watch:
         description: "Inclure les cibles watchOS (app montre + complications). Montre validée sur appareil le 2026-10-31 (build 816) : autorisée en production."
         type: boolean
@@ -144,6 +148,41 @@ jobs:
         run: |
           echo "::error::fiche=true est réservé à destination=production."
           exit 1
+
+      # Les visuels de la fiche ne se publient qu'avec une mise en production.
+      - name: Garde visuels store
+        if: inputs.visuels_run != '' && inputs.destination != 'production'
+        run: |
+          echo "::error::visuels_run est réservé à destination=production."
+          exit 1
+
+      # Téléchargement des visuels à publier (artifact d'un run visuels.yml réussi).
+      # Aucun impact sur le build : seul le step `Soumettre à l'App Store` les exporte via
+      # VISUELS_DIR, et le script `publish-app-store.mjs` appelle alors le CLI du monorepo.
+      - name: Télécharger les visuels à publier
+        if: inputs.visuels_run != ''
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: visuels-*
+          path: visuels-brut
+          run-id: ${{ inputs.visuels_run }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+
+      - name: Fusionner les artifacts visuels
+        id: visuels
+        if: inputs.visuels_run != ''
+        run: |
+          set -e
+          mkdir -p visuels
+          for d in visuels-brut/*/; do cp -r "$d"/. visuels/; done
+          langues=$(find visuels -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort | paste -sd, -)
+          if [ -z "$langues" ]; then
+            echo "::error::Aucune langue trouvée dans l'artifact visuels_run=${{ inputs.visuels_run }}."
+            exit 1
+          fi
+          echo "langues=$langues" >> "$GITHUB_OUTPUT"
+          echo "dir=$GITHUB_WORKSPACE/visuels" >> "$GITHUB_OUTPUT"
 
       # PRODUCTION : contrôles AVANT toute minute de build (branche par défaut ou
       # commit précis déjà intégré à celle-ci,
@@ -557,6 +596,7 @@ jobs:
       # PRODUCTION : attend le traitement Apple du build, remplit les nouveautés
       # (store/nouveautes/<version>/ du monorepo), rattache le build et soumet à
       # la validation, avec publication AUTOMATIQUE à 100 % après acceptation.
+      # Si visuels_run est fourni, publie aussi les captures AVANT la soumission.
       - name: Soumettre à l'App Store
         if: success() && inputs.destination == 'production'
         env:
@@ -567,6 +607,8 @@ jobs:
           BUILD_NUMBER: ${{ steps.bn.outputs.build_number }}
           POLL_TIMEOUT_SEC: "2700"
           PUBLIER_FICHE: ${{ inputs.fiche == true && '1' || '0' }}
+          VISUELS_DIR: ${{ steps.visuels.outputs.dir }}
+          VISUELS_LANGUES: ${{ steps.visuels.outputs.langues }}
         run: node ci/.github/scripts/publish-app-store.mjs
 
       # Rien n'est conservé : ni artifact (aucun upload-artifact dans ce workflow),

@@ -26,6 +26,8 @@
 //   CHECK_ONLY         - "1" pour le contrôle en lecture seule
 
 import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { resolve } from 'node:path';
 import { notesForLocale, readNouveautes } from './lib/nouveautes.mjs';
 import { FICHE_DIR, appliquerFichePlay, chargerFiches, importerModuleFiche, verifierPublication } from './lib/fiche-stores.mjs';
 import { accessToken, makeCall, createEdit, deleteEdit } from './lib/play.mjs';
@@ -33,6 +35,10 @@ import { accessToken, makeCall, createEdit, deleteEdit } from './lib/play.mjs';
 const CHECK_ONLY = process.env.CHECK_ONLY === '1';
 // Publie aussi la fiche (apps/mobile/store/fiche/) : input `fiche` de mise-en-production.yml.
 const PUBLIER_FICHE = process.env.PUBLIER_FICHE === '1';
+// Dossier `visuels/` à publier (artifact téléchargé depuis un run visuels.yml). Les captures
+// Google sont écrites dans le MÊME edit que la fiche + la release (un seul commit).
+const VISUELS_DIR = process.env.VISUELS_DIR || '';
+const VISUELS_LANGUES = process.env.VISUELS_LANGUES || '';
 // Déploiement par paliers : fraction d'utilisateurs servie (0 < f < 1), vide = 100 %.
 const USER_FRACTION = process.env.PLAY_USER_FRACTION ? Number(process.env.PLAY_USER_FRACTION) : null;
 if (USER_FRACTION !== null && !(USER_FRACTION > 0 && USER_FRACTION < 1)) {
@@ -86,6 +92,32 @@ async function main() {
     // Fiche d'abord : les langues créées (ex. en-GB / en-US) reçoivent ensuite
     // leurs notes de version. Écrite dans le même edit, donc publiée avec lui.
     if (fiches && !CHECK_ONLY) await appliquerFichePlay(call, edit, fiches);
+
+    // Visuels : écrits dans le MÊME edit que la fiche et la release (un seul commit).
+    // Le CLI de store-visuals lit PLAY_EDIT_ID pour réutiliser l'edit ouvert ici, et
+    // n'appelle donc PAS :commit (c'est nous qui le ferons plus bas, avec la release).
+    if (VISUELS_DIR && !CHECK_ONLY) {
+      const langues = VISUELS_LANGUES || 'fr,en';
+      console.log(`Publication des visuels Google Play depuis ${VISUELS_DIR} (langues : ${langues}).`);
+      const cli = resolve('app/node_modules/.bin/tsx');
+      const script = resolve('app/packages/store-visuals/src/cli.ts');
+      const sortie = resolve(VISUELS_DIR);
+      const r = spawnSync(
+        cli,
+        [script, 'publish', '--store', 'google', '--sortie', sortie, '--langues', langues, '--apply'],
+        {
+          stdio: 'inherit',
+          env: {
+            ...process.env,
+            JAI_VALIDE_LES_VISUELS: '1',
+            GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: process.env.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON,
+            PLAY_PACKAGE_NAME: PACKAGE,
+            PLAY_EDIT_ID: editId,
+          },
+        },
+      );
+      if (r.status !== 0) throw new Error(`Publication des visuels Google Play échouée (code ${r.status}).`);
+    }
 
     // Langues de la fiche Play : chacune reçoit ses notes de version.
     const languages = ((await call(`${edit}/listings`)).listings || []).map((l) => l.language);

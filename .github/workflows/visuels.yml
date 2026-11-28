@@ -183,6 +183,7 @@ jobs:
         shell: bash
         env:
           LANGUES: ${{ inputs.langues }}
+          CIBLES: ${{ inputs.cibles }}
         run: |
           set -euo pipefail
           mkdir -p captures
@@ -228,6 +229,23 @@ jobs:
             return 0
           }
 
+          # Appareils exigés par les cibles demandées (vide = toutes les cibles stores).
+          # Appareil mappé : apple-iphone-69/-ipad-13, google-tel/-tablette/-banniere, site-web.
+          cibles_a_tester="${CIBLES:-apple-iphone-69,apple-ipad-13,google-tel,google-tablette,google-banniere}"
+          appareils_requis=""
+          case "$cibles_a_tester" in
+            *apple-iphone-69*)  appareils_requis="$appareils_requis iphone" ;;
+          esac
+          case "$cibles_a_tester" in
+            *apple-ipad-13*)    appareils_requis="$appareils_requis ipad" ;;
+          esac
+          case "$cibles_a_tester" in
+            *google-tel*|*google-banniere*) appareils_requis="$appareils_requis android-tel" ;;
+          esac
+          case "$cibles_a_tester" in
+            *google-tablette*)  appareils_requis="$appareils_requis android-tablette" ;;
+          esac
+
           probleme=0
           for langue in $(echo "$LANGUES" | tr ',' ' '); do
             langue="${langue## }"; langue="${langue%% }"
@@ -236,7 +254,7 @@ jobs:
             ranger_famille "$langue" "brut-$langue-android" android
             ranger_famille "$langue" "brut-$langue-web"     web
             echo "### Captures $langue" >> "$GITHUB_STEP_SUMMARY"
-            for n in iphone ipad android-tel android-tablette; do
+            for n in $appareils_requis; do
               # Chacune des cibles stores a besoin de ses dossiers : on exige au moins 8 captures.
               if ! doit_exister_et_etre_peuple "captures/$langue/$n" 8; then
                 probleme=1

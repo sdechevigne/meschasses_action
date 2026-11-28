@@ -103,6 +103,8 @@ jobs:
       # Télécharge les artifacts de TOUS les runs cités (par langue, iOS/Android/Web), sous
       # brut-<langue>-<famille>/<run_id>/. On fusionne ensuite dans captures/<langue>/<appareil>/.
       - name: Télécharger les artifacts de captures (multi-run, multi-langue)
+        # bash explicite : le défaut `sh` de l'image Playwright ne connaît pas `set -o pipefail`.
+        shell: bash
         env:
           IOS_FR: ${{ inputs.run_captures_ios_fr }}
           IOS_EN: ${{ inputs.run_captures_ios_en }}
@@ -173,6 +175,7 @@ jobs:
           done
 
       - name: Ranger et contrôler les captures (par langue)
+        shell: bash
         env:
           LANGUES: ${{ inputs.langues }}
         run: |
@@ -241,6 +244,7 @@ jobs:
           [ "$probleme" -eq 0 ] || { echo "::error::Captures incomplètes (voir le résumé)."; exit 1; }
 
       - name: Rendu (une fois par langue, sorties fusionnées)
+        shell: bash
         working-directory: app/packages/store-visuals
         env:
           CIBLES: ${{ inputs.cibles }}

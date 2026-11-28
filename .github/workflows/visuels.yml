@@ -200,18 +200,20 @@ jobs:
           ranger_famille() {
             # $1 = langue, $2 = racine (brut-<langue>-<famille>), $3 = famille
             local langue="$1" racine="$2" famille="$3"
-            [ -d "$racine" ] || return 0
-            # $racine/run-N/<quelque chose>/*.png
+            [ -d "$racine" ] || { echo "   (pas de dossier $racine)"; return 0; }
+            # La profondeur réelle dépend de l'arborescence embarquée dans le zip :
+            # on cherche tout dossier d'une des catégories connues à n'importe quelle profondeur.
             while IFS= read -r d; do
               [ -d "$d" ] || continue
-              case "$(basename "$d")" in
-                iPhone*|iphone*) ranger_sousdossier "$d" "captures/$langue/iphone" ;;
-                iPad*|ipad*)     ranger_sousdossier "$d" "captures/$langue/ipad" ;;
-                android-tel)     ranger_sousdossier "$d" "captures/$langue/android-tel" ;;
-                android-tablette) ranger_sousdossier "$d" "captures/$langue/android-tablette" ;;
-                web)             ranger_sousdossier "$d" "captures/$langue/web" ;;
+              base=$(basename "$d")
+              case "$base" in
+                iPhone*|iphone*) echo "   ranger $d → captures/$langue/iphone"; ranger_sousdossier "$d" "captures/$langue/iphone" ;;
+                iPad*|ipad*)     echo "   ranger $d → captures/$langue/ipad";   ranger_sousdossier "$d" "captures/$langue/ipad" ;;
+                android-tel)     echo "   ranger $d → captures/$langue/android-tel"; ranger_sousdossier "$d" "captures/$langue/android-tel" ;;
+                android-tablette) echo "   ranger $d → captures/$langue/android-tablette"; ranger_sousdossier "$d" "captures/$langue/android-tablette" ;;
+                web)             echo "   ranger $d → captures/$langue/web"; ranger_sousdossier "$d" "captures/$langue/web" ;;
               esac
-            done < <(find "$racine" -mindepth 2 -maxdepth 2 -type d)
+            done < <(find "$racine" -type d \( -iname 'iPhone*' -o -iname 'iPad*' -o -name 'android-tel' -o -name 'android-tablette' -o -name 'web' \))
           }
 
           # Ensemble des captures iOS attendues (13 écrans, numérotés 01..13). Si ton moteur
